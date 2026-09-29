@@ -1,0 +1,47 @@
+{
+  "name": "meerpic-desktop",
+  "productName": "meerpic",
+  "version": "0.1.0",
+  "description": "Desktop wrapper for meerpic, so photos can be dragged out as real files.",
+  "main": "main.js",
+  "desktopName": "meerpic.desktop",
+  "author": {
+    "name": "Didi Hoffmann",
+    "email": "didi@ribalba.de"
+  },
+  "license": "MIT",
+  "scripts": {
+    "start": "electron . --class=meerpic",
+    "pack": "electron-builder --dir",
+    "dist": "electron-builder"
+  },
+  "devDependencies": {
+    "electron": "44.4.5",
+    "electron-builder": "26.15.3"
+  },
+  "build": {
+    "appId": "com.meerpic.desktop",
+    "productName": "meerpic",
+    "directories": { "buildResources": "build", "output": "dist" },
+    "files": ["main.js", "preload.js", "package.json", "build/icon.png"],
+    "mac": {
+      "category": "public.app-category.photography",
+      "target": ["dmg", "zip"],
+      "icon": "build/icon.png"
+    },
+    "linux": {
+      "target": ["AppImage", "deb"],
+      "category": "Graphics",
+      "icon": "build/icon.png",
+      "synopsis": "Desktop wrapper for meerpic.",
+      "syncDesktopName": true,
+      "executableName": "meerpic",
+      "desktop": {
+        "entry": { "StartupWMClass": "meerpic" }
+      }
+    },
+    "win": {
+      "target": ["nsis"]
+    }
+  }
+}

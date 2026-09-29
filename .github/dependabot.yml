@@ -1,0 +1,84 @@
+# Dependency updates, opened as pull requests.
+#
+# This file turns on *version* updates: a weekly pass that notices a pin has
+# fallen behind and offers the bump. Security updates are a separate switch, in
+# Settings -> Code security, and they are the half that matters most here --
+# they open a PR the day an advisory lands rather than waiting for Monday.
+# Turn both on; this file cannot.
+#
+# Both requirements files pin exactly, and they overlap: `core` is shared, so
+# `requirements.txt` and `agent/requirements.txt` name several of the same
+# packages and are meant to stay in step. Dependabot does not know that, and
+# updates each directory on its own -- so a bump to a shared pin arrives as two
+# pull requests, and merging one without the other is how they drift apart.
+#
+# Minor and patch updates are grouped into one pull request per ecosystem,
+# because twenty separate ones a week is how a project learns to ignore them.
+# Majors are deliberately left ungrouped: they arrive alone, because they are
+# the ones that need reading rather than merging.
+
+version: 2
+
+updates:
+  # --- Python ---------------------------------------------------------------
+  - package-ecosystem: "pip"
+    directory: "/"                      # requirements.txt: the web layer
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    labels: ["dependencies", "python"]
+    commit-message:
+      prefix: "deps"
+    groups:
+      python-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  - package-ecosystem: "pip"
+    directory: "/agent"                 # agent/requirements.txt: the indexer
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    labels: ["dependencies", "python"]
+    commit-message:
+      prefix: "deps"
+    groups:
+      python-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # --- Electron shell -------------------------------------------------------
+  - package-ecosystem: "npm"
+    directory: "/electron"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "electron"]
+    commit-message:
+      prefix: "deps"
+    groups:
+      electron-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]
+
+  # --- Base images ----------------------------------------------------------
+  # The FROM lines only: python:3.14-slim in the two images. A major here is a
+  # runtime change, which is exactly why it should arrive as its own pull request.
+  - package-ecosystem: "docker"
+    directories:
+      - "/"
+      - "/agent"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    labels: ["dependencies", "docker"]
+    commit-message:
+      prefix: "deps"
+    groups:
+      base-images-minor-patch:
+        patterns: ["*"]
+        update-types: ["minor", "patch"]

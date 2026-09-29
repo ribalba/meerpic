@@ -1,0 +1,5 @@
+# The image needs the nginx config and the site, nothing else: not the
+# screenshot tooling, not the Makefile, not this folder's README.
+*
+!nginx.conf
+!public

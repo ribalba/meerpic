@@ -1,0 +1,99 @@
+# meerpic
+
+> meerpic is a free, open-source (AGPL-3.0), self-hosted photo browser for large collections: libraries of many gigabytes and tens of thousands of files, in any number of folders. It reads every file's own metadata into a PostgreSQL database on your own machine, so photos sort by when they were actually taken, sit on a map where they were taken, and can be found by what is in them: type "cows" and you get cows. The search model (SigLIP 2) runs locally, and nothing leaves your machine. Syncing an iCloud Photos library in through rclone is built in.
+
+meerpic is a photo browser, not a photo service. It does not store your photos anywhere else and it does not change them: it indexes the folders already on your disk, as many as you list, and it never writes to a photo. Folders on disk need no sync at all. iCloud Photos is the first sync built in: when you press Sync, meerpic runs `rclone copy` into one of those folders. There is no cloud or hosted version. You run it yourself with Docker.
+
+- Website: https://meerpic.com/
+- Source code and full documentation: https://github.com/ribalba/meerpic
+- Status: version 0.1.0, a young project. There is no installer yet; it is `make up` from a checkout.
+- Family: part of the meer* apps (https://meerverse.com/), with meercal for calendars (https://meercal.com/), meerail for mail (https://meerail.com/) and meerato for tasks (https://meerato.com/)
+
+## Who it is for
+
+- People whose photo collection has outgrown the file manager: tens of thousands of files, in several folders, for example the phone's library and folders of camera imports.
+- People who want to search their own photos by what is in them without sending them to a service.
+- iPhone users on Linux whose videos do not play, because the phone records HEVC and many Linux desktops cannot decode it.
+- Technical users who are comfortable with Docker and want their photo library's metadata in a database they can query.
+
+## Features
+
+- **Search by what is in the picture:** every photo is turned into a vector by SigLIP 2, and a search is the photos nearest to what you typed. English and German (`kühe auf der weide` works). Runs on the CPU through ONNX Runtime: about 0.1 s per photo to index on a laptop, a few tens of milliseconds per query. Results by relevance, or the same matches by date.
+- **Find similar:** `s` on a photo, or `similar:1234` in the filter bar, gives the photos nearest to that one, and combines with every other filter.
+- **The words in a picture:** `text:rechnung` lists every photo and video with that word written in it (a letter, a receipt, a sign, a screenshot, a slide in a video); every word of `text:"opening hours"` has to be there, in any case, and part of a word is enough. PaddleOCR's PP-OCRv6 reads it on the CPU, umlauts and ß included; a video is read on ten frames. The info panel shows what was read, with the searched words marked, and copies it.
+- **The same person:** the info panel shows the faces in a photo, and clicking one lists every other picture with that person, closest first (`face:5678`, which combines with other filters). Nobody is named and nothing is grouped ahead of time. The face model (InsightFace buffalo_l) runs locally; its weights are licensed for non-commercial use only.
+- **Dates from the files:** the capture time comes from EXIF `DateTimeOriginal` in a photo and Apple's QuickTime creation date in a video, usually with the time zone it was taken in, then from patterns in the file name, then from the file time. meerpic remembers which it used. On a real library of 25,095 files, 20,474 carried a capture time.
+- **A map:** every photo with a position, clustered, with a thumbnail per cluster. Places (town, region, country) are looked up offline with a copy of GeoNames that ships with the agent. Map tiles are the one thing the browser fetches from elsewhere; the tile server is a setting, and the map can be turned off.
+- **A filter bar:** plain words search by meaning, everything else narrows, and all of it combines. For example `in:potsdam`, `near:52.39,13.06,2`, `is:video`, `is:live`, `is:screenshot`, `is:favorite`, `album:"Urlaub Polen"`, `is:whatsapp`, `is:saved`, `2024`, `month:2024-07`, `after:2024-03`, `before:2024-06-30`, `camera:iphone`, `file:IMG_12`, `text:rechnung`, `face:5678`, `similar:1234`, `sort:date`.
+- **Every folder, one timeline:** any number of library folders (`[library] roots`, each under a name, so a folder can move without a re-index), shown together, newest first. Indexing goes newest first too: the last few days are browsable within a minute and searchable a little after, and the rest fills in behind.
+- **iPhone videos that play:** the agent gives every video an H.264 copy at 720p, tone-mapped from the iPhone's HDR; on a real library the copies came out at 5 to 10% of the originals' size. The original is untouched. Videos play in place on hover; until the copy exists, the tile flicks through ten frames from the whole clip.
+- **Live Photos as one photo:** the HEIC and its two-second MOV are paired; the motion plays when you rest on the LIVE badge.
+- **Edits as one photo:** `IMG_1925-edited.heic` and `IMG_1925.HEIC` show as one photo, the edit in front and the original one click behind.
+- **Into a mail as a JPEG:** in the desktop app, dragging a photo out hands the target a real file, the original when it is a JPEG and a JPEG made from it when the phone wrote HEIC. In a browser, `c` copies and `d` downloads the JPEG. An option strips the GPS position from what you hand over.
+- **Possibly explicit pictures:** `is:nsfw` lists what a local image classifier scores as explicit, most certain first, blurred until the pointer is on them. It is a ranking, not a verdict.
+- **Delete, on this computer only:** the dialog lists every file move before it happens, and only that list runs. Files move to `.meerpic-trash/<day>/` in the library folder, emptied after 30 days. A photo synced from iCloud stays in iCloud and on the iPhone, because rclone can read iCloud Photos but not change them, and the next sync does not download it again. Delete can be turned off.
+- **iCloud Photos, built in:** one Sync button runs `rclone copy` (never `rclone sync`, so nothing is deleted on either side) with a progress bar, on demand or on an interval. After every sync the agent reads favourites, albums (WhatsApp's included), Hidden and Recently Deleted through `rclone lsjson --metadata` and matches them to the local files. Nothing is downloaded for it. Hidden and Recently Deleted stay out of every listing unless asked for.
+- **Full keyboard control, light and dark themes** following the system or pinned, and an optional Electron desktop app.
+
+## How it works
+
+meerpic runs as a small set of containers on your machine:
+
+- **meerpic-agent** does the work: it walks the library folders, reads the metadata with exiftool, draws thumbnails, converts videos with ffmpeg, computes the search vectors and runs rclone when you press Sync. It is the only writer to the database and the cache.
+- **meerpic-server** is the web application and user interface (FastAPI). It reads the database and leaves a job for the agent when you want something done. It never runs ffmpeg or rclone and never changes a photo.
+- **PostgreSQL with pgvector** stores one row per file, one search vector per photo, iCloud's albums, deleted files and the job queue. Every column is derived from the files and can be rebuilt; the cache can be deleted and will be made again.
+
+## Privacy
+
+- **Your photos stay on your machine.** The search model, the text reader, the face model, the place lookup and the explicit-picture classifier all run locally.
+- **The browser fetches one thing from elsewhere: map tiles**, from the configured tile server (OpenStreetMap by default). Set your own, or turn the map off. Beyond that, the agent downloads its models once, into its cache, and talks to iCloud through rclone only if you use the iCloud sync.
+- **The web UI listens on 127.0.0.1 by default, with no password.** Set a password before exposing the port.
+- **meerpic never writes to a photo,** and deletes nothing except through a Delete somebody confirmed, and then only on this computer.
+
+## Requirements
+
+- **Docker** Engine 24 or newer with the Compose v2 plugin. Runs Postgres, the server and the agent.
+- **Your photos** in one or more folders on the machine, listed under `[library] roots` in `meerpic.toml`.
+- **Disk:** about 40 KB per photo for thumbnails, 5 to 10% of your videos' size for the playable copies, and 1.5 GB for the search model.
+- **CPU:** the first index is the expensive part, about two hours for 25,000 photos on a 20-core laptop, then the video copies in the background. After that, only new photos cost anything.
+- **Only for iCloud Photos: rclone** 1.74 or newer with an `iclouddrive` remote using `service = photos`. The agent image brings its own rclone binary and uses your `rclone.conf`.
+
+## Install
+
+```bash
+git clone https://github.com/ribalba/meerpic
+cd meerpic
+make up          # postgres + server + agent  ->  http://127.0.0.1:8040
+```
+
+`make up` writes `meerpic.toml` from `meerpic.example.toml` the first time. `[library] roots` there lists the folders to index, as many as you like; the default is `~/Pictures/iCloud`, and folders outside `~/Pictures` also need `MEERPIC_PICTURES` in `.env`.
+
+For iCloud Photos, create an rclone remote with `rclone config` (type `iclouddrive`, your Apple ID, `service = photos`) and press Sync. When Apple asks for a new two-factor code, run `rclone config reconnect iclouddrive:` and sync again.
+
+The desktop app: `make desktop`.
+
+## Not there yet
+
+- An installer: for now it is `make up` from a checkout.
+- Editing: on purpose, meerpic never writes to a file.
+- Chats: WhatsApp keeps no trace of the chat in what it saves, so photos cannot be grouped by chat.
+
+## Common questions
+
+- **Is meerpic free?** Yes. It is open source under the GNU AGPL-3.0.
+- **Do I need iCloud?** No. meerpic indexes folders on your disk, as many as you list. iCloud Photos is the first sync built in, for photos that live there.
+- **Does deleting a photo in meerpic delete it from iCloud or my iPhone?** No. Delete moves the file to a trash folder on this computer only. To remove it from the phone, delete it there.
+- **Does it upload my photos anywhere?** No. Everything, the search model included, runs on your machine. The browser fetches only map tiles from elsewhere.
+- **Can it play iPhone videos on Linux?** Yes. The agent's container has a full ffmpeg and makes an H.264 copy of every video.
+
+## Documentation
+
+- [README](https://github.com/ribalba/meerpic#readme): full documentation, covering features, the filter bar, keys, configuration and the architecture
+- [Configuration reference](https://github.com/ribalba/meerpic/blob/main/meerpic.example.toml): every setting, annotated
+- [Desktop app](https://github.com/ribalba/meerpic/blob/main/electron/README.md): the Electron wrapper and why dragging needs it
+
+## Optional
+
+- [Screenshots](https://meerpic.com/#screenshots): the grid, search, similar, the map, the viewer, text search, albums and the delete dialog, taken with CC0 demo photos
+- [Screenshot photo credits](https://meerpic.com/img/screenshots/credits.txt)
+- [License](https://github.com/ribalba/meerpic/blob/main/LICENSE): GNU AGPL-3.0

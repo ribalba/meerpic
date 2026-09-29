@@ -1,0 +1,806 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <title>meerpic: a self-hosted photo browser for large collections</title>
+  <meta name="description" content="meerpic is a free, open-source, self-hosted photo browser for large collections: tens of thousands of files, in any number of folders. Search by what is in the picture with a model that runs on your machine, dates read from the files themselves, a map, iPhone videos that play and Live Photos as one photo. Everything in PostgreSQL. Syncing iCloud Photos in is built in." />
+  <meta name="theme-color" content="#2185d0" />
+  <link rel="canonical" href="https://meerpic.com/" />
+  <link rel="icon" type="image/png" sizes="32x32" href="/img/favicon-32.png" />
+  <link rel="icon" type="image/png" sizes="64x64" href="/img/favicon-64.png" />
+  <link rel="apple-touch-icon" sizes="180x180" href="/img/favicon-180.png" />
+
+  <!-- Link previews (chat apps, Mastodon, LinkedIn). -->
+  <meta property="og:type" content="website" />
+  <meta property="og:site_name" content="meerpic" />
+  <meta property="og:url" content="https://meerpic.com/" />
+  <meta property="og:title" content="meerpic: a self-hosted photo browser for large collections" />
+  <meta property="og:description" content="Tens of thousands of photos, in as many folders as you keep them, findable by what is in them with a model that runs on your machine. Everything in PostgreSQL, everything on GitHub." />
+  <meta property="og:image" content="https://meerpic.com/img/og.jpg" />
+  <meta property="og:image:width" content="1200" />
+  <meta property="og:image:height" content="630" />
+  <meta name="twitter:card" content="summary_large_image" />
+
+  <!-- For language models and other machine readers: the plain-text summary
+       (llmstxt.org) and the same facts as schema.org data. Keep both in step
+       with the page and with llms.txt, as on meerail.com. -->
+  <link rel="alternate" type="text/plain" href="/llms.txt" title="meerpic in plain text, for LLMs" />
+  <script type="application/ld+json">
+  {
+    "@context": "https://schema.org",
+    "@type": "SoftwareApplication",
+    "name": "meerpic",
+    "url": "https://meerpic.com/",
+    "description": "A free, open-source, self-hosted photo browser for large collections: libraries of many gigabytes and tens of thousands of files, in any number of folders. It reads every file's own metadata into PostgreSQL, so photos sort by when they were taken and sit on a map where they were taken, and it searches by what is in a picture with a SigLIP 2 model that runs on your machine. Syncing an iCloud Photos library in through rclone is built in.",
+    "applicationCategory": "MultimediaApplication",
+    "applicationSubCategory": "Photo browser",
+    "softwareVersion": "0.1.0",
+    "softwareRequirements": "Docker Engine 24+ with Docker Compose v2; for iCloud Photos, rclone 1.74+ with an iclouddrive remote (service = photos)",
+    "isAccessibleForFree": true,
+    "license": "https://www.gnu.org/licenses/agpl-3.0.html",
+    "image": "https://meerpic.com/img/logo-square.png",
+    "screenshot": "https://meerpic.com/img/screenshots/grid.webp",
+    "sameAs": ["https://github.com/ribalba/meerpic"],
+    "featureList": [
+      "Search by what is in the picture, in English or German, with a SigLIP 2 model that runs locally on the CPU",
+      "Find similar photos",
+      "Search the words written in photos and videos (OCR with PaddleOCR, locally)",
+      "Every picture of the same person, from a face in the info panel (locally, nobody named)",
+      "Capture dates read from each file's EXIF or QuickTime metadata, with the time zone it was taken in",
+      "A map of every photo with a position, with places looked up offline from GeoNames",
+      "A filter bar: in:, is:, album:, camera:, text:, face:, dates and ranges, similar:",
+      "Any number of library folders in one timeline, indexed newest first",
+      "Browser-playable H.264 copies of iPhone HEVC videos",
+      "Live Photos and edited photos shown as one photo",
+      "Drag a photo into a mail as a JPEG, even when the phone wrote HEIC (desktop app)",
+      "A search for possibly explicit pictures (is:nsfw), blurred until you look, from a local classifier",
+      "Delete on this computer only, with every file move shown first",
+      "Built-in iCloud Photos sync through rclone, with favourites, albums, Hidden and Recently Deleted",
+      "Everything in PostgreSQL with pgvector",
+      "Full keyboard control, light and dark themes"
+    ]
+  }
+  </script>
+
+  <!-- Heavy stylesheet loaded non-render-blocking, as on the meerail site. -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/fomantic-ui@2.9.3/dist/semantic.min.css" media="print" onload="this.media='all'" />
+  <link rel="stylesheet" href="/css/site.css" />
+  <noscript>
+    <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/fomantic-ui@2.9.3/dist/semantic.min.css" />
+  </noscript>
+</head>
+<body>
+  <div class="landing">
+
+    <!-- Top bar -->
+    <header class="landing-nav" id="top">
+      <div class="landing-nav-inner">
+        <a class="landing-brand" href="/">
+          <img src="/img/logo-square.png" alt="" />
+          <span>meerpic</span>
+        </a>
+        <nav class="landing-nav-links">
+          <a href="#features">Features</a>
+          <a href="#screenshots">Screenshots</a>
+          <a href="#start">Get started</a>
+          <a class="ui small primary button" href="https://github.com/ribalba/meerpic" target="_blank" rel="noopener">
+            <i class="github icon"></i> GitHub
+          </a>
+        </nav>
+      </div>
+    </header>
+
+    <!-- Hero -->
+    <section class="landing-hero">
+      <img src="/img/logo.png" width="443" height="640" alt="The meerpic meerkat, holding up a photo" class="landing-logo is-portrait" />
+      <div class="landing-hero-copy">
+        <h1 class="landing-title">All your photos, on your own machine, findable.</h1>
+        <p class="landing-subtitle">
+          meerpic is a self-hosted photo browser for large collections: tens
+          of thousands of files, in as many folders as you keep them. It reads
+          every file's own metadata into PostgreSQL, so the photos sort by when
+          they were actually taken, sit on a map where they were taken, and can
+          be found by what is in them: type <code>cows</code> and you get cows.
+          Nothing leaves your machine; the search model runs locally too.
+        </p>
+        <div class="landing-hero-actions">
+          <a class="ui primary button" href="#start"><i class="rocket icon"></i> Get started</a>
+          <a class="ui basic button" href="https://github.com/ribalba/meerpic" target="_blank" rel="noopener"><i class="github icon"></i> GitHub</a>
+        </div>
+      </div>
+    </section>
+
+    <!-- The grid, wide. The same shot opens the screenshot grid below. -->
+    <figure class="landing-showcase">
+      <button type="button" class="landing-shot-btn"
+              data-full="/img/screenshots/grid.webp"
+              data-full-dark="/img/screenshots/grid-dark.webp"
+              data-caption="&lt;strong&gt;The grid.&lt;/strong&gt; Newest first: the photo you took a minute ago is top-left, under the day it was taken.">
+        <picture>
+          <source srcset="/img/screenshots/grid-dark.webp" media="(prefers-color-scheme: dark)" />
+          <img src="/img/screenshots/grid.webp" width="2880" height="1800" decoding="async"
+               alt="The meerpic grid: a sidebar with favourites, videos, Live Photos, albums and places, and photo thumbnails under day headings, newest first." />
+        </picture>
+        <span class="landing-shot-zoom"><i class="expand icon"></i></span>
+      </button>
+      <figcaption>Newest first: the photo you took a minute ago is top-left, under the day it was taken.</figcaption>
+    </figure>
+
+    <!-- Main features -->
+    <section id="features" class="landing-features">
+      <h2 class="landing-section-title">What makes meerpic different</h2>
+      <p class="landing-section-lede">
+        Built for a library that has outgrown the file manager: tens of
+        thousands of files, in as many folders as you keep them, and all of
+        them yours.
+      </p>
+
+      <div class="landing-grid">
+        <article class="landing-card">
+          <div class="landing-card-body">
+            <div class="landing-card-icon"><i class="search icon"></i></div>
+            <h3>Search by what is in the picture</h3>
+            <p>
+              Type it: <code>cows</code>, <code>birthday cake</code>,
+              <code>receipt</code>. Every photo is turned into a vector by
+              <strong>SigLIP 2</strong>, a model trained to put an image and a
+              sentence describing it close together, and a search is the
+              photos nearest to what you typed. It reads German as well as
+              English: <code>kühe auf der weide</code> works.
+            </p>
+            <p>
+              It runs on your CPU through ONNX Runtime: about 0.1 s per photo to
+              index on a laptop, and a few tens of milliseconds per query.
+              Results come by relevance; one switch orders the same matches by
+              date.
+            </p>
+          </div>
+        </article>
+
+        <article class="landing-card">
+          <div class="landing-card-body">
+            <div class="landing-card-icon"><i class="clone outline icon"></i></div>
+            <h3>More like this one</h3>
+            <p>
+              Press <kbd>s</kbd> on a picture of a sheep and you get the other
+              sheep. Find similar is the photos nearest to another photo, and it
+              is a filter like any other, <code>similar:1234</code>, so it
+              combines with everything else: <code>similar:1234 2023</code> is
+              the ones from that year.
+            </p>
+          </div>
+        </article>
+
+        <article class="landing-card">
+          <div class="landing-card-body">
+            <div class="landing-card-icon"><i class="font icon"></i></div>
+            <h3>The words in a picture</h3>
+            <p>
+              <code>text:rechnung</code> lists every photo and video with that
+              word in it: a letter, a receipt, a sign, a screenshot, a slide in
+              a video. The info panel shows what was read, with your words
+              marked, and Copy text puts all of it on the clipboard.
+            </p>
+            <p>
+              PaddleOCR reads it on the CPU, umlauts and ß included, and
+              nothing leaves the machine. Screenshots and saved pictures are
+              read first, because that is where the text is.
+            </p>
+          </div>
+        </article>
+
+        <article class="landing-card">
+          <div class="landing-card-body">
+            <div class="landing-card-icon"><i class="user circle outline icon"></i></div>
+            <h3>The same person</h3>
+            <p>
+              The info panel shows the faces in a photo. Click one and you get
+              every other picture with that person in it, closest first. It is
+              a filter too, <code>face:5678</code>, so <code>face:5678 2019</code>
+              is that person in 2019.
+            </p>
+            <p>
+              Nobody is named and nothing is grouped ahead of time: a face
+              model on your CPU turns each face into a vector, and the list is
+              the faces nearest to the one you clicked. Its weights are licensed
+              for non-commercial use only.
+            </p>
+          </div>
+        </article>
+
+        <article class="landing-card">
+          <div class="landing-card-body">
+            <div class="landing-card-icon"><i class="clock outline icon"></i></div>
+            <h3>The dates are in the files</h3>
+            <p>
+              A file manager sorting by "created" sees when a file landed on
+              your disk, not when it was taken: after a sync, the same second
+              for twenty thousand photos. The real capture time is inside each
+              file, usually with the time
+              zone it was taken in. meerpic reads it, falls back to the file
+              name, then to the file time, and remembers which it used, so a
+              photo dated by guesswork says so. On a real library:
+            </p>
+            <div class="landing-stats">
+              <span class="landing-stat"><b>25,095</b>files</span>
+              <span class="landing-stat"><b>20,474</b>with a capture time</span>
+              <span class="landing-stat"><b>5</b>with nothing at all</span>
+            </div>
+          </div>
+        </article>
+
+        <article class="landing-card">
+          <div class="landing-card-body">
+            <div class="landing-card-icon"><i class="map outline icon"></i></div>
+            <h3>A map, and places offline</h3>
+            <p>
+              The map (<kbd>M</kbd>) shows every photo with a position,
+              clustered, with a thumbnail per cluster. Pan to a place and press
+              Show in grid for the photos in view, or type
+              <code>in:potsdam</code>. Coordinates become town, region and
+              country with a copy of GeoNames that ships with the agent: no
+              geocoding service sees where you have been. The map tiles are the
+              one thing the browser fetches from elsewhere, and the tile server
+              is a setting.
+            </p>
+          </div>
+        </article>
+
+        <article class="landing-card landing-card-wide">
+          <div class="landing-card-body">
+            <div class="landing-card-wide-inner">
+              <div class="landing-card-wide-copy">
+                <div class="landing-card-icon"><i class="filter icon"></i></div>
+                <h3>A filter bar that types like meercal's and meerail's</h3>
+                <p>
+                  Plain words search by meaning. Everything else narrows, and all
+                  of it combines: <code>in:potsdam is:video 2024</code> is the
+                  videos you took in Potsdam that year. Dates are the time the
+                  photo was taken, where it was taken. The places are offered as
+                  you type.
+                </p>
+              </div>
+              <div class="landing-card-wide-aside is-table">
+                <table class="landing-table">
+                  <tr><td><code>in:potsdam</code></td><td>the town, region or country</td></tr>
+                  <tr><td><code>is:video</code></td><td>what it is: also <code>is:photo</code>, <code>is:screenshot</code></td></tr>
+                  <tr><td><code>is:live</code></td><td>Live Photos</td></tr>
+                  <tr><td><code>2024</code></td><td>a year, or <code>month:2024-07</code>, <code>on:2024-07-22</code></td></tr>
+                  <tr><td><code>after:2024-03</code></td><td>a range, with <code>before:</code>; a year, a month or a day</td></tr>
+                  <tr><td><code>camera:iphone</code></td><td>the camera's make or model</td></tr>
+                  <tr><td><code>album:"Urlaub Polen"</code></td><td>an iCloud album; <code>is:favorite</code> for the hearts</td></tr>
+                  <tr><td><code>similar:1234</code></td><td>nearest to that photo</td></tr>
+                  <tr><td><code>text:rechnung</code></td><td>written in it, anywhere, in any case</td></tr>
+                </table>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="landing-card">
+          <div class="landing-card-body">
+            <div class="landing-card-icon"><i class="folder open outline icon"></i></div>
+            <h3>Every folder, one timeline</h3>
+            <p>
+              Point it at as many folders as you keep photos in: the phone's
+              library, a folder of camera imports. They show as one timeline,
+              newest first. Each folder has a name, so it can move on disk
+              without a re-index.
+            </p>
+            <p>
+              Indexing goes newest first too: the last few days are browsable
+              within a minute, searchable a little after, and the rest fills in
+              behind. The first index is the expensive part; after that, only
+              new photos cost anything.
+            </p>
+          </div>
+        </article>
+
+        <article class="landing-card">
+          <div class="landing-card-body">
+            <div class="landing-card-icon"><i class="play circle outline icon"></i></div>
+            <h3>iPhone videos that play</h3>
+            <p>
+              An iPhone records HEVC, which no browser on Linux decodes. The
+              agent runs a full ffmpeg and gives every video an H.264 copy at
+              720p, tone-mapped from the iPhone's HDR, so it plays everywhere.
+              On a real library the copies came out at 5 to 10% of the
+              originals' size, and the original is untouched and one click away.
+            </p>
+            <p>
+              Rest the pointer on a video and it plays in place, muted. Until
+              its copy exists, moving across the tile flicks through ten frames
+              from the whole clip, so a ten-minute video is as quick to check as
+              a ten-second one.
+            </p>
+          </div>
+        </article>
+
+        <article class="landing-card">
+          <div class="landing-card-body">
+            <div class="landing-card-icon"><i class="images outline icon"></i></div>
+            <h3>One moment, one photo</h3>
+            <p>
+              A <strong>Live Photo</strong> arrives as a HEIC and a two-second
+              MOV. Shown naively, every moment appears twice. meerpic pairs
+              them: the still is the photo, and the motion plays when you rest
+              on its LIVE badge. An <strong>edited</strong> photo arrives as a
+              second file, <code>IMG_1925-edited.heic</code>; as in Photos, the
+              edit is what the grid shows and the original is one click behind
+              it. On the library above:
+            </p>
+            <div class="landing-stats">
+              <span class="landing-stat"><b>5,772</b>videos out of the grid</span>
+              <span class="landing-stat"><b>552</b>edit pairs</span>
+            </div>
+          </div>
+        </article>
+
+        <article class="landing-card">
+          <div class="landing-card-body">
+            <div class="landing-card-icon"><i class="paper plane outline icon"></i></div>
+            <h3>Into a mail, as a JPEG</h3>
+            <p>
+              Once it is in your library, the photo you just took is top-left.
+              Drag it out of the desktop app into a mail and the mail gets a real file: the original when
+              it is a JPEG, a JPEG made from it when the phone wrote HEIC,
+              because the person you are writing to may not be on an Apple
+              device. In a browser tab, <kbd>c</kbd> copies it and
+              <kbd>d</kbd> downloads the JPEG. One setting takes the GPS
+              position out of everything you hand over.
+            </p>
+          </div>
+        </article>
+
+        <article class="landing-card">
+          <div class="landing-card-body">
+            <div class="landing-card-icon"><i class="trash alternate outline icon"></i></div>
+            <h3>Delete that shows its work</h3>
+            <p>
+              The dialog lists every file move before it happens, one per file,
+              and only that list runs. Files go to a trash folder in the library,
+              emptied after 30 days. Deleting only happens on this computer: a
+              photo synced from iCloud <strong>stays in iCloud and on your
+              iPhone</strong>, because rclone can read iCloud Photos but not
+              change them, and the next sync does not bring it back.
+            </p>
+            <div class="landing-rows">
+              <span class="landing-row"><i class="image outline icon"></i><code>IMG_1925.HEIC</code><span class="landing-row-note">the photo</span></span>
+              <span class="landing-row"><i class="film icon"></i><code>IMG_1925.MOV</code><span class="landing-row-note">its motion</span></span>
+            </div>
+          </div>
+        </article>
+
+        <article class="landing-card">
+          <div class="landing-card-body">
+            <div class="landing-card-icon"><i class="shield alternate icon"></i></div>
+            <h3>The server never changes a photo</h3>
+            <p>
+              meerpic splits in two, the way meercal and meerail do. The
+              <strong>agent</strong> does the work: it walks the library, reads
+              the metadata with exiftool, draws thumbnails, converts videos and
+              runs rclone when you press Sync. The <strong>server</strong> is the
+              web layer: it reads the database and leaves a note for the agent
+              when you want something done. Nothing is ever written to a photo.
+            </p>
+          </div>
+        </article>
+
+        <article class="landing-card landing-card-wide">
+          <div class="landing-card-body">
+            <div class="landing-card-wide-inner">
+              <div class="landing-card-wide-copy">
+                <div class="landing-card-icon"><i class="cloud icon"></i></div>
+                <h3>iCloud Photos, if that is where your photos are</h3>
+                <p>
+                  Folders on your disk need no sync at all. iCloud Photos is the
+                  first sync built in: one Sync button (or <kbd>.</kbd>) runs the
+                  <code>rclone copy</code> you would otherwise type, with a
+                  progress bar, and the new photos land in your library.
+                  <code>copy</code>, not <code>sync</code>: nothing is ever
+                  deleted on either side.
+                </p>
+                <p>
+                  After every sync the agent also reads what iCloud knows and
+                  the files do not: a heart set on the phone, the Hidden album,
+                  Recently Deleted and every album, WhatsApp's included. Nothing
+                  is downloaded for it, and Hidden and Recently Deleted stay out
+                  of every listing unless you ask for them.
+                </p>
+              </div>
+              <div class="landing-card-wide-aside">
+                <div class="landing-chips">
+                  <span class="landing-chip"><i class="sync alternate icon"></i>Sync</span>
+                  <span class="landing-chip"><i class="heart icon"></i>Favourites</span>
+                  <span class="landing-chip"><i class="folder outline icon"></i>Albums</span>
+                </div>
+                <div class="landing-chips">
+                  <span class="landing-chip"><i class="eye slash outline icon"></i>Hidden</span>
+                  <span class="landing-chip"><i class="trash alternate outline icon"></i>Recently Deleted</span>
+                </div>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="landing-card">
+          <div class="landing-card-body">
+            <div class="landing-card-icon"><i class="eye slash outline icon"></i></div>
+            <h3>Pictures you did not want</h3>
+            <p>
+              <code>is:nsfw</code> lists what a classifier made for exactly
+              this scores as explicit, most certain first, and it looks at the
+              pictures apps saved before anything else. Those tiles are blurred
+              until the pointer is on them. It runs on your CPU, and it is a
+              ranking, not a verdict: look before you delete. When it is wrong,
+              <kbd>n</kbd> marks a photo safe.
+            </p>
+          </div>
+        </article>
+
+        <article class="landing-card">
+          <div class="landing-card-body">
+            <div class="landing-card-icon"><i class="database icon"></i></div>
+            <h3>Everything in PostgreSQL</h3>
+            <p>
+              One row per file, with where it is, when and where it was taken
+              and what took it; one search vector per photo, in
+              <strong>pgvector</strong> beside everything else; the albums; the
+              deletes. Every column is derived from the file and can be
+              rebuilt, and every file in the cache can be deleted and will be
+              made again. <code>make psql</code> gives you a shell on it.
+            </p>
+          </div>
+        </article>
+
+        <article class="landing-card">
+          <div class="landing-card-body">
+            <div class="landing-card-icon"><i class="keyboard icon"></i></div>
+            <h3>Keyboard first, light and dark</h3>
+            <p>
+              Full keyboard control, from search to delete, and <kbd>?</kbd>
+              lists every key. Light and dark, following the system or pinned.
+            </p>
+            <div class="landing-keys">
+              <span class="landing-key">/</span>
+              <span class="landing-key">Enter</span>
+              <span class="landing-key">x</span>
+              <span class="landing-key">s</span>
+              <span class="landing-key">m</span>
+              <span class="landing-key">i</span>
+              <span class="landing-key">d</span>
+              <span class="landing-key">c</span>
+              <span class="landing-key">.</span>
+              <span class="landing-key">Del</span>
+              <span class="landing-key">g f</span>
+              <span class="landing-key">Home</span>
+            </div>
+          </div>
+        </article>
+      </div>
+    </section>
+
+    <!-- Screenshots -->
+    <section id="screenshots" class="landing-shots">
+      <h2 class="landing-section-title">See it</h2>
+      <p class="landing-section-lede">
+        Real screenshots of a running meerpic, filled with CC0 demo photos
+        rather than anyone's library. Click any of them to see it full size.
+      </p>
+
+      <div class="landing-shot-grid">
+        <figure class="landing-shot">
+          <button type="button" class="landing-shot-btn"
+                  data-full="/img/screenshots/grid.webp"
+                  data-full-dark="/img/screenshots/grid-dark.webp"
+                  data-caption="&lt;strong&gt;The grid.&lt;/strong&gt; Newest first: the photo you took a minute ago is top-left, under the day it was taken.">
+            <picture>
+              <source srcset="/img/screenshots/grid-dark.webp" media="(prefers-color-scheme: dark)" />
+              <img src="/img/screenshots/grid.webp" width="2880" height="1800" loading="lazy" decoding="async"
+                   alt="The meerpic grid: a sidebar with favourites, videos, Live Photos, albums and places, and photo thumbnails under day headings, newest first." />
+            </picture>
+            <span class="landing-shot-zoom"><i class="expand icon"></i></span>
+          </button>
+          <figcaption>The grid</figcaption>
+        </figure>
+
+        <figure class="landing-shot">
+          <button type="button" class="landing-shot-btn"
+                  data-full="/img/screenshots/search.webp"
+                  data-caption="&lt;strong&gt;&lt;code&gt;cows&lt;/code&gt;.&lt;/strong&gt; Type what is in the picture. The model runs on your machine.">
+            <img src="/img/screenshots/search.webp" width="2880" height="1800" loading="lazy" decoding="async"
+                 alt="The meerpic search bar with the word cows typed in, and a grid of photos of cows as the result." />
+            <span class="landing-shot-zoom"><i class="expand icon"></i></span>
+          </button>
+          <figcaption>Search</figcaption>
+        </figure>
+
+        <figure class="landing-shot">
+          <button type="button" class="landing-shot-btn"
+                  data-full="/img/screenshots/similar.webp"
+                  data-caption="&lt;strong&gt;Find similar.&lt;/strong&gt; &lt;code&gt;s&lt;/code&gt; on a photo finds the others that look like it.">
+            <img src="/img/screenshots/similar.webp" width="2880" height="1800" loading="lazy" decoding="async"
+                 alt="The meerpic grid filtered with similar: and a photo id, showing the photos that look most like that one." />
+            <span class="landing-shot-zoom"><i class="expand icon"></i></span>
+          </button>
+          <figcaption>Similar</figcaption>
+        </figure>
+
+        <figure class="landing-shot">
+          <button type="button" class="landing-shot-btn"
+                  data-full="/img/screenshots/map.webp"
+                  data-caption="&lt;strong&gt;The map.&lt;/strong&gt; Every photo with a position, on a map, clustered, with a thumbnail per cluster.">
+            <img src="/img/screenshots/map.webp" width="2880" height="1800" loading="lazy" decoding="async"
+                 alt="The meerpic map view: clusters of photos drawn as thumbnails over a street map." />
+            <span class="landing-shot-zoom"><i class="expand icon"></i></span>
+          </button>
+          <figcaption>The map</figcaption>
+        </figure>
+
+        <figure class="landing-shot">
+          <button type="button" class="landing-shot-btn"
+                  data-full="/img/screenshots/viewer.webp"
+                  data-caption="&lt;strong&gt;One photo, with its info.&lt;/strong&gt; When and where, and taken with what.">
+            <img src="/img/screenshots/viewer.webp" width="2880" height="1800" loading="lazy" decoding="async"
+                 alt="A single photo open in the meerpic viewer, with the info panel showing when and where it was taken and the camera." />
+            <span class="landing-shot-zoom"><i class="expand icon"></i></span>
+          </button>
+          <figcaption>A photo</figcaption>
+        </figure>
+
+        <figure class="landing-shot">
+          <button type="button" class="landing-shot-btn"
+                  data-full="/img/screenshots/text.webp"
+                  data-caption="&lt;strong&gt;&lt;code&gt;text:wurst&lt;/code&gt;.&lt;/strong&gt; The words in a picture, read on your machine: the info panel marks the word, and the photo shows where it is written.">
+            <img src="/img/screenshots/text.webp" width="2880" height="1800" loading="lazy" decoding="async"
+                 alt="A photo of a sausage stand open in the meerpic viewer after a text:wurst search: the sign reading WURST is outlined on the photo, and the word is marked in the text listed in the info panel." />
+            <span class="landing-shot-zoom"><i class="expand icon"></i></span>
+          </button>
+          <figcaption>Text</figcaption>
+        </figure>
+
+        <figure class="landing-shot">
+          <button type="button" class="landing-shot-btn"
+                  data-full="/img/screenshots/album.webp"
+                  data-caption="&lt;strong&gt;Albums.&lt;/strong&gt; Albums and favourites from iCloud sit beside your own folders.">
+            <img src="/img/screenshots/album.webp" width="2880" height="1800" loading="lazy" decoding="async"
+                 alt="The Baltic Sea album selected in the meerpic sidebar, with its photos in the grid under the days they were taken." />
+            <span class="landing-shot-zoom"><i class="expand icon"></i></span>
+          </button>
+          <figcaption>Albums</figcaption>
+        </figure>
+
+        <figure class="landing-shot">
+          <button type="button" class="landing-shot-btn"
+                  data-full="/img/screenshots/delete.webp"
+                  data-caption="&lt;strong&gt;Delete.&lt;/strong&gt; Every file move is shown before it happens, and only this computer's copy moves.">
+            <img src="/img/screenshots/delete.webp" width="2880" height="1800" loading="lazy" decoding="async"
+                 alt="The meerpic delete dialog, listing each file that will move to the trash folder." />
+            <span class="landing-shot-zoom"><i class="expand icon"></i></span>
+          </button>
+          <figcaption>Delete</figcaption>
+        </figure>
+      </div>
+    </section>
+
+    <!-- Get started -->
+    <section id="start" class="landing-features">
+      <h2 class="landing-section-title">Get started</h2>
+      <p class="landing-section-lede">
+        There is no installer yet: for now it is a checkout and
+        <code>make up</code>. You need Docker, your photos in one or more
+        folders, and room for the cache.
+      </p>
+
+      <div class="landing-grid">
+        <article class="landing-card landing-card-wide">
+          <div class="landing-card-body">
+            <div class="landing-card-wide-inner">
+              <div class="landing-card-wide-copy">
+                <div class="landing-card-icon"><i class="clipboard list icon"></i></div>
+                <h3>What you need</h3>
+                <p>
+                  The agent image brings its own exiftool, a full ffmpeg and
+                  rclone; from your machine it takes your photo folders, and for
+                  iCloud your <code>rclone.conf</code>. The first index is the
+                  expensive part. After that, only new photos cost anything.
+                </p>
+              </div>
+              <div class="landing-card-wide-aside is-table">
+                <table class="landing-table">
+                  <tr><td>Docker</td><td>Engine 24+ with the Compose v2 plugin. Runs Postgres, the server and the agent.</td></tr>
+                  <tr><td>Disk</td><td>About 40 KB per photo for thumbnails, 5 to 10% of your videos' size for the playable copies, and 1.5 GB for the search model.</td></tr>
+                  <tr><td>CPU</td><td>About two hours for 25,000 photos on a 20-core laptop, then the video copies in the background.</td></tr>
+                  <tr><td>rclone</td><td>Only for iCloud Photos: 1.74+ with an <code>iclouddrive</code> remote using <code>service = photos</code>.</td></tr>
+                </table>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="landing-card landing-card-wide">
+          <div class="landing-card-body">
+            <div class="landing-card-wide-inner">
+              <div class="landing-card-wide-copy">
+                <div class="landing-card-icon"><i class="terminal icon"></i></div>
+                <h3>1. Clone it and start it</h3>
+                <p>
+                  Postgres, the server and the agent, in Docker, on
+                  <code>http://127.0.0.1:8040</code>. There is no password by
+                  default, which is right for 127.0.0.1: set one before you
+                  expose the port.
+                </p>
+              </div>
+              <div class="landing-card-wide-aside">
+                <pre class="landing-code">git clone https://github.com/ribalba/meerpic
+cd meerpic
+make up</pre>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="landing-card landing-card-wide">
+          <div class="landing-card-body">
+            <div class="landing-card-wide-inner">
+              <div class="landing-card-wide-copy">
+                <div class="landing-card-icon"><i class="folder open outline icon"></i></div>
+                <h3>2. Tell it where your photos are</h3>
+                <p>
+                  The first <code>make up</code> writes <code>meerpic.toml</code>.
+                  <code>[library] roots</code> there lists the folders to index,
+                  as many as you like, each under a name; the default is
+                  <code>~/Pictures/iCloud</code>. Folders outside
+                  <code>~/Pictures</code> also need <code>MEERPIC_PICTURES</code>
+                  in <code>.env</code>.
+                </p>
+              </div>
+              <div class="landing-card-wide-aside">
+                <pre class="landing-code"># meerpic.toml
+[library]
+roots.icloud = "~/Pictures/iCloud"
+roots.camera = "~/Pictures/Camera"</pre>
+              </div>
+            </div>
+          </div>
+        </article>
+
+        <article class="landing-card">
+          <div class="landing-card-body">
+            <div class="landing-card-icon"><i class="hourglass half icon"></i></div>
+            <h3>3. Let it index</h3>
+            <p>
+              The agent starts at once, newest first: the last few days are
+              browsable within a minute, searchable a little after, and the rest
+              fills in behind. Videos get their playable copies once everything
+              has a thumbnail and a search vector, except one you open, which is
+              converted right away. The sidebar shows what is left.
+            </p>
+            <pre class="landing-code">make agent-test
+make logs</pre>
+          </div>
+        </article>
+
+        <article class="landing-card">
+          <div class="landing-card-body">
+            <div class="landing-card-icon"><i class="cloud download icon"></i></div>
+            <h3>Optional: iCloud Photos</h3>
+            <p>
+              <code>rclone config</code>: a new remote of type
+              <code>iclouddrive</code>, your Apple ID, and
+              <code>service = photos</code>. Then Sync copies the library into
+              <code>~/Pictures/iCloud</code>. When Apple wants a new two-factor
+              code, every few weeks, the sync says so: run
+              <code>rclone config reconnect iclouddrive:</code> and press Sync
+              again.
+            </p>
+            <pre class="landing-code">rclone config
+make sync</pre>
+          </div>
+        </article>
+
+        <article class="landing-card">
+          <div class="landing-card-body">
+            <div class="landing-card-icon"><i class="desktop icon"></i></div>
+            <h3>Or run it as a desktop app</h3>
+            <p>
+              A thin Electron window around the server, like meercal's and
+              meerail's, with one thing a browser cannot do: dragging a photo
+              out hands the target a <strong>real file</strong>, so a mail gets
+              an attachment rather than a link. It needs the server running.
+            </p>
+            <pre class="landing-code">make desktop</pre>
+          </div>
+        </article>
+      </div>
+
+      <p class="landing-section-lede" style="margin-top:2rem">
+        meerpic is at 0.1.0. Not there yet: an installer, and editing, which
+        is on purpose: the files are the truth, and meerpic never writes one.
+      </p>
+    </section>
+
+    <footer class="landing-footer">
+      <p>
+        <strong>meerpic</strong> is the meerkat photo browser, one of the
+        <a href="https://meerverse.com" target="_blank" rel="noopener">meerverse</a>
+        family of open-source apps.
+      </p>
+      <p class="landing-footer-links">
+        <a href="https://meerverse.com" target="_blank" rel="noopener">meerverse.com</a>
+        <a href="https://meercal.com" target="_blank" rel="noopener">meercal.com</a>
+        <a href="https://meerail.com" target="_blank" rel="noopener">meerail.com</a>
+        <a href="https://meerato.com" target="_blank" rel="noopener">meerato.com</a>
+      </p>
+      <p>
+        The photos in the screenshots are CC0 demo photos from StockSnap, not
+        anyone's library: <a href="/img/screenshots/credits.txt">credits</a>.
+      </p>
+      <p>
+        <a href="https://github.com/ribalba/meerpic" target="_blank" rel="noopener">
+          <i class="github icon"></i>Open source, AGPL-3.0
+        </a>
+      </p>
+    </footer>
+
+  </div>
+
+  <!-- Screenshot lightbox. Hidden until a thumbnail is clicked. -->
+  <div class="landing-lightbox" id="lightbox" hidden role="dialog" aria-modal="true" aria-label="Screenshot">
+    <button type="button" class="landing-lightbox-close" id="lightbox-close" aria-label="Close">
+      <i class="times icon"></i>
+    </button>
+    <figure class="landing-lightbox-figure">
+      <img id="lightbox-img" src="" alt="" />
+      <figcaption id="lightbox-caption"></figcaption>
+    </figure>
+  </div>
+
+  <script>
+    // Screenshot lightbox: thumbnails carry the full-size source and the long
+    // caption, so the markup stays readable and nothing loads until it's asked for.
+    (function () {
+      var box = document.getElementById('lightbox');
+      var img = document.getElementById('lightbox-img');
+      var cap = document.getElementById('lightbox-caption');
+      var closeBtn = document.getElementById('lightbox-close');
+      var lastFocused = null;
+      var dark = window.matchMedia('(prefers-color-scheme: dark)');
+
+      function open(btn) {
+        var full = btn.dataset.full;
+        // Some shots ship a dark variant; match what the thumbnail is showing.
+        if (btn.dataset.fullDark && dark.matches) full = btn.dataset.fullDark;
+        var thumb = btn.querySelector('img');
+        lastFocused = btn;
+        img.src = full;
+        img.alt = thumb ? thumb.alt : '';
+        cap.innerHTML = btn.dataset.caption || '';
+        box.hidden = false;
+        document.body.style.overflow = 'hidden';
+        closeBtn.focus();
+      }
+
+      function close() {
+        box.hidden = true;
+        img.src = '';
+        document.body.style.overflow = '';
+        if (lastFocused) lastFocused.focus();
+      }
+
+      document.querySelectorAll('.landing-shot-btn').forEach(function (btn) {
+        btn.addEventListener('click', function () { open(btn); });
+      });
+      closeBtn.addEventListener('click', close);
+      // Clicking the backdrop closes; clicking the image itself does not.
+      box.addEventListener('click', function (e) {
+        if (e.target === box || e.target.tagName === 'FIGURE') close();
+      });
+      document.addEventListener('keydown', function (e) {
+        if (e.key === 'Escape' && !box.hidden) close();
+      });
+    })();
+  </script>
+</body>
+</html>

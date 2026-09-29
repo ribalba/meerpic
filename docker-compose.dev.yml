@@ -1,0 +1,22 @@
+# Live reload inside Docker. Bind-mounts the source over the image's copy and
+# restarts uvicorn on every edit.
+#
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+services:
+  server:
+    command: ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000", "--reload"]
+    volumes:
+      - ./app:/app/app
+      - ./core:/app/core
+    ports:
+      # A port of its own, so a dev stack can sit beside a running one.
+      - "${MEERPIC_BIND:-127.0.0.1}:8041:8000"
+
+  agent:
+    # No --reload equivalent: the agent is a loop, not a server, and restarting
+    # it mid-conversion is not something a file watcher should decide. The
+    # source is mounted so an edit needs `docker compose restart agent` rather
+    # than a rebuild.
+    volumes:
+      - ./agent:/app/agent
+      - ./core:/app/core

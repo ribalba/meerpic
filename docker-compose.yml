@@ -1,0 +1,120 @@
+# The project name is set explicitly, and is not the directory name. Compose
+# derives it from the directory otherwise, and two stacks with one name share
+# containers and the database volume. The same reasoning as meercal's.
+name: meerpic
+
+services:
+  db:
+    # Postgres with pgvector, which is where the photo vectors live: "similar"
+    # and "search for cows" are both one ORDER BY against an index in here.
+    # The official postgres:18 image plus one extension, from the extension's
+    # own maintainers.
+    image: pgvector/pgvector:pg18
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-meerpic}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-meerpic}
+      POSTGRES_DB: ${POSTGRES_DB:-meerpic}
+    networks:
+      meerpic:
+    ports:
+      # On the host's loopback so an agent run natively (`make agent`) can
+      # reach it. The 127.0.0.1 prefix is load-bearing: drop it and Docker
+      # publishes on 0.0.0.0, straight through the host firewall to a database
+      # with the default password.
+      #
+      # 5434: meerail has 5432 and meercal 5433, and the three run side by side.
+      - "127.0.0.1:${MEERPIC_DB_PORT:-5434}:5432"
+    volumes:
+      # Postgres 18+ expects a single mount at /var/lib/postgresql (not .../data).
+      - meerpic-db:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-meerpic} -d ${POSTGRES_DB:-meerpic}"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    restart: unless-stopped
+
+  server:
+    build: .
+    image: meerpic-server:local
+    # Runs as you, because it reads your pictures, and a bind mount carries the
+    # host's ownership through: the image's own user could read a 0644 photo
+    # but not a 0600 meerpic.toml, and writes into the cache would come out
+    # owned by a uid that is nobody on the host. `make up` passes your ids.
+    user: "${MEERPIC_UID:-1000}:${MEERPIC_GID:-1000}"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # Container topology only. Everything else comes from meerpic.toml.
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-meerpic}:${POSTGRES_PASSWORD:-meerpic}@db:5432/${POSTGRES_DB:-meerpic}
+      # `~` in meerpic.toml means your home, not the container's; see
+      # core/config.py. The mounts below are made at the same absolute paths
+      # they have on the host, and this is the other half of that bargain.
+      MEERPIC_HOST_HOME: ${HOME}
+      # The container runs as your uid, which has no home directory in the
+      # image; anything that insists on writing under $HOME writes to /tmp.
+      HOME: /tmp
+      # A photo whose camera wrote no offset is read in this zone.
+      TZ: ${TZ:-}
+      # The search model is downloaded into the cache on first use. Nothing
+      # else in either container talks to the internet.
+      HF_HUB_DISABLE_TELEMETRY: "1"
+    volumes:
+      - ./meerpic.toml:/app/meerpic.toml:ro
+      # Read-only: the server shows your pictures and never changes one.
+      - ${MEERPIC_PICTURES:-${HOME}/Pictures}:${MEERPIC_PICTURES:-${HOME}/Pictures}:ro
+      # Read-write for two things only: the search model's download, and
+      # full-screen JPEGs of HEIC photos, made the first time one is opened.
+      - ${MEERPIC_CACHE:-${HOME}/.cache/meerpic}:${MEERPIC_CACHE:-${HOME}/.cache/meerpic}
+    networks:
+      meerpic:
+    ports:
+      # 8040: meerail has 8000, meercal 8010, meerink 8030.
+      - "${MEERPIC_BIND:-127.0.0.1}:${MEERPIC_PORT:-8040}:8000"
+    restart: unless-stopped
+
+  agent:
+    # The half that does the work: walks the library, reads the metadata,
+    # draws thumbnails, converts videos, computes the vectors, and runs rclone
+    # when the Sync button asks it to. A container rather than a process on the
+    # host because of ffmpeg: iPhones record HEVC, and the ffmpeg Fedora ships
+    # can neither decode it nor encode H.264. Debian's can, and this image has
+    # it. `make agent` still runs it natively for development.
+    build:
+      context: .
+      dockerfile: agent/Dockerfile
+    image: meerpic-agent:local
+    user: "${MEERPIC_UID:-1000}:${MEERPIC_GID:-1000}"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      DATABASE_URL: postgresql+psycopg://${POSTGRES_USER:-meerpic}:${POSTGRES_PASSWORD:-meerpic}@db:5432/${POSTGRES_DB:-meerpic}
+      MEERPIC_HOST_HOME: ${HOME}
+      HOME: /tmp
+      TZ: ${TZ:-}
+      HF_HUB_DISABLE_TELEMETRY: "1"
+      # rclone keeps the iCloud session (cookies, trust token) in its config
+      # file and rewrites it as the session is refreshed, so the file is
+      # mounted read-write, from where your own rclone keeps it. Its scratch
+      # space goes to /tmp, not to a home directory this container does not
+      # have.
+      RCLONE_CONFIG: /rclone/rclone.conf
+      RCLONE_CACHE_DIR: /tmp/rclone
+    volumes:
+      - ./meerpic.toml:/app/meerpic.toml:ro
+      # Read-write: the Sync button is rclone copying new photos in here.
+      - ${MEERPIC_PICTURES:-${HOME}/Pictures}:${MEERPIC_PICTURES:-${HOME}/Pictures}
+      - ${MEERPIC_CACHE:-${HOME}/.cache/meerpic}:${MEERPIC_CACHE:-${HOME}/.cache/meerpic}
+      - ${RCLONE_CONFIG_DIR:-${HOME}/.config/rclone}:/rclone
+    networks:
+      meerpic:
+    # No ports: the agent reaches out and nothing reaches in.
+    restart: unless-stopped
+
+networks:
+  meerpic:
+
+volumes:
+  meerpic-db:

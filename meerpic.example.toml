@@ -1,0 +1,157 @@
+# meerpic configuration. Copy to meerpic.toml (`make up` does it for you).
+#
+# Every key can also be set in the environment, upper-cased with the section
+# folded in: [server] password -> SERVER_PASSWORD, [search] model ->
+# SEARCH_MODEL. The environment wins over this file.
+#
+# Paths: `~` means *your* home directory, also inside the containers (compose
+# passes it in as MEERPIC_HOST_HOME), and the containers see your folders at
+# the same paths you do. That is what lets the desktop app drag the original
+# file straight off your disk.
+
+[database]
+# The bundled Postgres, as seen from the host. The containers are told their
+# own address in docker-compose.yml, which wins over this line.
+url = "postgresql+psycopg://meerpic:meerpic@127.0.0.1:5434/meerpic"
+
+[server]
+# Empty: no password, which is right for 127.0.0.1. Set one before exposing
+# the port anywhere else; with a password the server refuses plain HTTP from
+# anything but loopback (see trusted_proxies if TLS ends at a proxy).
+password = ""
+# Signs the session cookie. Any long random string; changing it logs out
+# every browser.
+secret_key = "change-me-to-something-long-and-random"
+# Where a photo that carries no time zone was taken, as far as its clock is
+# concerned. Most cameras and every EXIF before 2016 write only "14:32"; this
+# says where that was. "system" = this machine's zone.
+timezone = "system"
+# trusted_proxies = ["10.0.0.0/8", "172.16.0.0/12"]
+
+[library]
+# name = folder. The name is stored with each photo, so a folder can move
+# without re-indexing: change the path here and nothing else. More than one is
+# fine, e.g. the phone's library and a folder of camera imports:
+#   roots = { icloud = "~/Pictures/iCloud", camera = "~/Pictures/Camera" }
+# docker-compose.yml mounts ~/Pictures (MEERPIC_PICTURES in .env); a folder
+# outside it needs a mount of its own.
+roots = { icloud = "~/Pictures/iCloud" }
+# The Delete button moves files to .meerpic-trash in their library folder
+# (emptied after 30 days). A photo from iCloud stays in iCloud and on the
+# phone: rclone can read iCloud Photos but not change them. Sync leaves it
+# out from then on. false removes the button.
+delete = true
+
+[cache]
+# Thumbnails (~40 KB per photo), browser-playable copies of videos (roughly a
+# fifth of the originals) and the search model (1.5 GB). All of it can be
+# rebuilt from the library, so nothing in here needs a backup.
+dir = "~/.cache/meerpic"
+
+[agent]
+# Seconds between walks of the library looking for new files. A walk of 25,000
+# files is a fraction of a second, so this can be short.
+scan_interval = 60
+# Processes for thumbnails and metadata. 0 = all cores but two, which keeps
+# the machine usable during the first index of a large library.
+workers = 0
+
+[video]
+# "all": every video gets a playable H.264 copy in the background, newest
+# first. "on-demand": only when you open it (the first play then waits for
+# the conversion). iPhones record HEVC, which no browser on Linux plays.
+previews = "all"
+# Short edge of the copy, in pixels. It is a preview, not an archive: the
+# original is always one click away.
+height = 720
+crf = 23
+preset = "veryfast"
+
+[search]
+# The model behind "find similar" and searching for words. The default reads
+# German as well as English and gave clearly better results on a real library;
+# "Qdrant/clip-ViT-B-32" is six times faster to index and English only.
+# Changing it re-computes every photo's vector (from the thumbnails, so it is
+# minutes rather than hours). The model is downloaded once, into [cache] dir.
+model = "google/siglip2-base-patch16-224"
+# Below these similarities a match is noise. 0 = the model's own default.
+min_score = 0
+similar_min_score = 0
+
+[sync]
+# The Sync button runs, in the agent:
+#   rclone copy '<remote>' '<the folder of library.roots.<root>>'
+# with JSON progress output instead of --progress, so the window can draw it.
+# rclone's own config (with the iCloud session) is ~/.config/rclone/rclone.conf,
+# mounted into the agent container read-write, because rclone refreshes the
+# session in that file. When iCloud asks for a new two-factor code, run
+# `rclone config reconnect iclouddrive:` in a terminal and sync again.
+enabled = true
+remote = "iclouddrive:PrimarySync/All Photos"
+root = "icloud"
+# Extra rclone arguments, e.g. ["--transfers", "8"].
+args = []
+# Minutes between automatic syncs; 0 = only when asked.
+interval = 0
+# After each sync, read what iCloud knows and the files do not: favourites,
+# hidden photos, Recently Deleted, and your albums (WhatsApp's included).
+# A minute of listing; nothing is downloaded.
+albums = true
+
+[map]
+# The one thing the browser fetches from anywhere but this server: map tiles.
+# Point it at your own tile server if that matters to you; "" turns the map
+# off. Dark mode dims these with a filter rather than needing a second set.
+tile_url = "https://tile.openstreetmap.org/{z}/{x}/{y}.png"
+attribution = '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors'
+max_zoom = 19
+
+[share]
+# What a drag out of the window, Copy and "Download JPEG" hand over: a JPEG
+# for anything that is not one (HEIC above all, which the person you are
+# mailing may not be able to open), the original bytes for a JPEG.
+# Remove the GPS position from what you hand over:
+strip_location = false
+jpeg_quality = 90
+# Longest edge in pixels, 0 = full size.
+max_edge = 0
+
+[nsfw]
+# A classifier made for exactly this (a ViT fine-tuned to tell explicit from
+# not, 88 MB, downloaded once into [cache] dir) scores every photo, the
+# pictures apps saved (WhatsApp and friends) first. `is:nsfw` lists what
+# scores above the threshold, most certain first.
+enabled = true
+threshold = 0.7
+# Blur those tiles in the grid until the pointer is on them.
+blur = true
+model = "AdamCodd/vit-base-nsfw-detector"
+# A photo you mark safe (key n) is never flagged, and a flagged photo whose
+# search vector is at least this close to it is not flagged either: 0.92 is
+# "the same shot" (an edit and its original are about 0.97 apart, unrelated
+# photos about 0.55). 0 turns it off.
+clear_above = 0.92
+# At least this close: still flagged, but listed last in is:nsfw. 0 = off.
+demote_above = 0.85
+
+[faces]
+# Every photo is searched for faces (SCRFD) and each face measured (ArcFace):
+# InsightFace's buffalo_l, 190 MB, downloaded once into [cache] dir. Its
+# weights are licensed for non-commercial use only. Click a face in the info
+# panel for every picture of that person (`face:`).
+enabled = true
+# How alike two faces must be (0 to 1) to count as the same person. Lower
+# finds more of them, and sooner a stranger.
+min_score = 0.35
+# How sure the detector must be that something is a face at all.
+detect_score = 0.7
+model = "immich-app/buffalo_l"
+
+[ocr]
+# The text in every photo and video (PaddleOCR's PP-OCRv6 on the CPU, 23 MB,
+# downloaded once into [cache] dir): signs, letters, receipts, screenshots.
+# `text:rechnung` finds them; the info panel shows what was read.
+# Screenshots and saved pictures are read first.
+enabled = true
+# Videos too, on ten frames spread over each clip.
+videos = true

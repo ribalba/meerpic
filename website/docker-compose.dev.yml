@@ -1,0 +1,18 @@
+# Local preview, layered over docker-compose.yml:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+#
+# Publishes the site on http://127.0.0.1:8083 (8080 is meerail's website, 8081
+# meercal's and 8082 meerverse's, so all four can run side by side; the meerpic
+# app itself is on 8040) and serves public/ from the working tree, so an edit
+# is a browser reload away.
+#
+# The project name would otherwise be the folder's, `website`, which meercal's
+# and meerail's site folders share: a preview of one would replace another's
+# container. Set here rather than in docker-compose.yml, which Coolify names.
+name: meerpic-website
+services:
+  website:
+    ports:
+      - "127.0.0.1:${WEBSITE_PORT:-8083}:80"
+    volumes:
+      - ./public:/usr/share/nginx/html:ro

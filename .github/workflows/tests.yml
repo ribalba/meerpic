@@ -1,0 +1,75 @@
+# The test suite, on every push to main and every pull request.
+#
+# Everything the suite can use is provided, so nothing skips for want of it:
+# a Postgres with pgvector for the database tests (they skip without
+# MEERPIC_TEST_DB), and exiftool and ffmpeg for the agent's metadata,
+# thumbnail and video tests (they skip without them). A skip here would be a
+# green tick for a test that never ran, so `-ra` lists every one in the
+# summary.
+#
+# Python and Postgres match what ships: python:3.14-slim in both images, and
+# pgvector/pgvector:pg18 in docker-compose.yml. The search model is not
+# downloaded: MEERPIC_EMBED_FAKE (set by tests/conftest.py) stands in for it.
+
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+
+    services:
+      # A fresh database per run. The tests drop every table they find, so this
+      # must never be one that holds anything.
+      postgres:
+        image: pgvector/pgvector:pg18
+        env:
+          POSTGRES_USER: meerpic
+          POSTGRES_PASSWORD: meerpic
+          POSTGRES_DB: meerpic_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd "pg_isready -U meerpic -d meerpic_test"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 12
+
+    env:
+      MEERPIC_TEST_DB: postgresql+psycopg://meerpic:meerpic@127.0.0.1:5432/meerpic_test
+
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.14"
+          cache: pip
+          cache-dependency-path: |
+            requirements.txt
+            agent/requirements.txt
+
+      - name: Install exiftool and ffmpeg
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libimage-exiftool-perl ffmpeg
+
+      # Both halves, as `make venv` does: the tests import the server and the
+      # agent. pytest and httpx are not in either file because neither image
+      # needs them.
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r agent/requirements.txt pytest httpx
+
+      - name: Run the tests
+        run: pytest -ra

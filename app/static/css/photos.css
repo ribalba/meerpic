@@ -1,0 +1,777 @@
+/* meerpic: the photo half of the suite. Light + dark, following the system
+   unless the theme is forced.
+
+   The palette is meercal's (which is meerail's), token for token: the three
+   programs sit side by side on the same screen and a second definition of
+   "dark" would show. What is new here is only what a photo library needs: the
+   justified grid, the scrubber, the viewer and the map. */
+
+:root {
+  /* Which half of every light-dark() pair below is used. `light dark` means the
+     OS decides, and it also puts scrollbars and form controls on the same side
+     as the rest of the app, which a hand-rolled palette cannot. */
+  color-scheme: light dark;
+  --font: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  --accent: light-dark(#1d6ff2, #3b82f6);
+  --accent-weak: light-dark(#e8f0fe, #1e2a44);
+  --accent-soft: light-dark(#6ba4f8, #7cb0fb);
+  --bg: light-dark(#ffffff, #1c1c1e);
+  --bg-elev: light-dark(#f5f5f7, #2c2c2e);
+  --sidebar: light-dark(#e8e8ea, #232325);
+  --sidebar-section: #8a8a8e;
+  --text: light-dark(#1d1d1f, #f5f5f7);
+  --text-muted: light-dark(#86868b, #8d8d92);
+  --text-faint: light-dark(#a1a1a6, #6a6a6e);
+  --border: light-dark(#dededf, #313133);
+  --border-strong: light-dark(#cbcbcd, #3a3a3c);
+  --danger: #d70015;
+  /* The same red as text: #d70015 on the dark background is too dim to read,
+     so dark mode uses Apple's own dark-mode red for words and icons. */
+  --danger-text: light-dark(#d70015, #ff453a);
+  --ok: light-dark(#1a7f37, #3fb950);
+  --warning: light-dark(#96610a, #f5a623);
+  --shadow: 0 1px 3px light-dark(rgba(0,0,0,.10), rgba(0,0,0,.5)),
+            0 10px 30px light-dark(rgba(0,0,0,.08), rgba(0,0,0,.4));
+  --radius: 8px;
+  --hover-tint: light-dark(rgba(0,0,0,.05), rgba(255,255,255,.06));
+  --hover-tint-soft: light-dark(rgba(0,0,0,.035), rgba(255,255,255,.05));
+  --hover-tint-strong: light-dark(rgba(0,0,0,.06), rgba(255,255,255,.08));
+  /* A photo that has no thumbnail yet. A tint of the page rather than grey on
+     grey: it is a hole that will be filled, and should not read as a picture of
+     fog. */
+  --placeholder: light-dark(#ececef, #2a2a2d);
+  /* The space between tiles. Small, because the pictures are the content and
+     the gutters are not; Google Photos settled on about this. */
+  --tile-gap: 4px;
+  --scrub-w: 58px;
+  /* The favourite heart where it is drawn on the page rather than on a
+     picture (on a picture it is white, as Photos draws it). */
+  --heart: light-dark(#e0245e, #ff5c8a);
+}
+
+:root[data-theme="light"] { color-scheme: light; }
+:root[data-theme="dark"] { color-scheme: dark; }
+
+* { box-sizing: border-box; }
+/* `hidden` outranks the layout rules below. Without this, any element given
+   `display: grid` or `flex` (the login overlay, the viewer) ignores the
+   attribute entirely, which is a whole class of "why is that on screen". */
+[hidden] { display: none !important; }
+html, body { margin: 0; height: 100%; font-family: var(--font); color: var(--text);
+  background: var(--bg); -webkit-font-smoothing: antialiased; overflow: hidden; }
+.muted { color: var(--text-muted); }
+.small { font-size: .8rem; }
+.grow { flex: 1; }
+kbd { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .7rem;
+  background: var(--bg-elev); border: 1px solid var(--border); border-bottom-width: 2px;
+  border-radius: 4px; padding: .05rem .3rem; color: var(--text-muted); }
+code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .78em; }
+button { font-family: inherit; color: inherit; }
+
+/* --- Layout --- */
+.app { display: grid; grid-template-columns: 236px 1fr; height: 100vh; height: 100dvh; }
+.main { display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
+/* Off on desktop, where the sidebar is a column. Qualified, because
+   `.icon-btn` below would otherwise put the menu button back. */
+.toolbar .menu-btn, .scrim { display: none; }
+
+/* --- Sidebar --- */
+.sidebar { background: var(--sidebar); border-right: 1px solid var(--border);
+  display: flex; flex-direction: column; overflow: hidden; min-height: 0; }
+.sidebar-toolbar { display: flex; align-items: center; justify-content: space-between;
+  padding: .55rem .75rem .35rem .9rem; -webkit-app-region: drag; }
+.brand { font-weight: 700; font-size: .98rem; letter-spacing: -.01em;
+  display: flex; align-items: center; gap: .4rem; margin-right: auto; }
+.brand-logo { height: 24px; width: 24px; display: block; }
+.sidebar-toolbar .icon-btn, .sidebar-tools .icon-btn { -webkit-app-region: no-drag; }
+.sidebar-tools { display: flex; justify-content: flex-end; gap: .1rem; padding: 0 .75rem .4rem; }
+
+.icon-btn { display: inline-flex; align-items: center; justify-content: center;
+  background: none; border: 0; cursor: pointer; border-radius: 6px;
+  padding: .25rem .4rem; font-size: .95rem; line-height: 1; color: var(--text-muted); }
+.icon-btn:hover { background: var(--hover-tint-strong); color: var(--text); }
+.icon-btn:disabled { opacity: .45; cursor: default; }
+.icon-btn:disabled:hover { background: none; color: var(--text-muted); }
+/* Only the glyph turns. Spinning the button spun its hover fill and its focus
+   outline as well, and a rotating rounded rectangle reads as a bug. */
+#btn-sync.spin svg { animation: spin 1s linear infinite; }
+#btn-sync.spin { color: var(--accent); }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+.agent-warning { margin: 0 .75rem .5rem; padding: .4rem .55rem; border-radius: 6px;
+  background: light-dark(#fff4e5, #3a2a12); color: var(--warning); border: 1px solid var(--border);
+  font-size: .78rem; text-align: left; cursor: default; }
+
+.nav-tree { flex: 1; overflow-y: auto; padding: .1rem .5rem 1rem; min-height: 0; }
+.tree-section { font-size: .68rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .04em; color: var(--sidebar-section); padding: .8rem .55rem .25rem;
+  display: flex; align-items: center; gap: .35rem; }
+
+/* One line per place in the library you can go to. Every one of them is a
+   filter written into the bar, so the row is a button that teaches the
+   language rather than a mode of its own. */
+.nav-row { display: flex; align-items: center; gap: .5rem; width: 100%; padding: .3rem .5rem;
+  border: 0; background: none; border-radius: 6px; cursor: pointer; font-size: .86rem;
+  text-align: left; user-select: none; color: var(--text); }
+.nav-row:hover { background: var(--hover-tint); }
+.nav-row.active { background: var(--accent-weak); }
+.nav-row.active .nav-name { font-weight: 620; }
+.nav-icon { display: inline-flex; color: var(--text-muted); flex: 0 0 auto; }
+.nav-row.active .nav-icon { color: var(--accent); }
+.nav-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.nav-count { font-size: .72rem; color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.nav-empty { font-size: .76rem; color: var(--text-faint); padding: .2rem .55rem; }
+/* A control in a section heading ("Refresh from iCloud"): the heading's
+   size, none of its capitals. */
+.tree-link { margin-left: auto; display: inline-flex; align-items: center; gap: .3rem; border: 0;
+  background: none; padding: 0; cursor: pointer; font: inherit; font-size: .7rem; font-weight: 400;
+  text-transform: none; letter-spacing: 0; color: var(--accent); }
+.tree-link:hover { text-decoration: underline; }
+.tree-link:disabled { color: var(--text-muted); cursor: default; text-decoration: none; }
+.spinner.tiny { width: 11px; height: 11px; border-width: 1.5px; }
+
+/* --- The status card: sync and indexing, at the foot of the sidebar --- */
+.status-card { margin: .2rem .6rem .5rem; padding: .5rem .6rem; border-radius: 8px;
+  background: var(--bg); border: 1px solid var(--border); font-size: .76rem;
+  color: var(--text-muted); display: flex; flex-direction: column; gap: .3rem; }
+.status-card:empty { display: none; }
+.st-head { display: flex; align-items: center; gap: .4rem; color: var(--text); font-weight: 600;
+  font-size: .8rem; }
+.st-line { display: flex; align-items: flex-start; gap: .35rem; min-width: 0; line-height: 1.35; }
+.st-line > span { overflow-wrap: anywhere; min-width: 0; }
+.st-line > .st-dot { margin-top: .3rem; }
+.st-num { font-variant-numeric: tabular-nums; }
+.st-current { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .7rem;
+  color: var(--text-faint); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.st-bar { height: 5px; border-radius: 3px; background: var(--hover-tint-strong); overflow: hidden; }
+.st-fill { height: 100%; background: var(--accent); border-radius: 3px; transition: width .4s ease; }
+/* Before rclone has counted anything there is no fraction to draw, only the
+   fact that it is working. */
+.st-bar.indeterminate .st-fill { width: 30% !important;
+  animation: st-slide 1.3s ease-in-out infinite; }
+@keyframes st-slide { from { transform: translateX(-100%); } to { transform: translateX(340%); } }
+.st-error { color: var(--danger); }
+/* The one failure a user can fix and has to fix by hand. Drawn as the thing to
+   read, with the command selectable, because "sync failed" alone sends them to
+   the logs for an answer the program already had. */
+.st-auth { background: light-dark(#fff4e5, #3a2a12); color: var(--warning);
+  border: 1px solid var(--warning); border-radius: 6px; padding: .4rem .5rem; line-height: 1.4; }
+.st-auth code { display: block; margin-top: .25rem; user-select: all; color: var(--text);
+  background: var(--bg-elev); border-radius: 4px; padding: .15rem .3rem; overflow-wrap: anywhere; }
+.st-index { color: var(--text-muted); line-height: 1.4; }
+.st-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--ok); flex: 0 0 auto; }
+.st-dot.busy { background: var(--accent); animation: pulse 1.2s ease-in-out infinite; }
+/* Work that is waiting for an agent that is not there: not busy, not done. */
+.st-dot.stalled { background: var(--text-faint); }
+@keyframes pulse { 50% { opacity: .35; } }
+.link { background: none; border: 0; color: var(--accent); cursor: pointer; font-size: .76rem; padding: 0; }
+.link:hover { text-decoration: underline; }
+.st-head .link { margin-left: auto; font-weight: 400; }
+.st-sep { height: 1px; background: var(--border); margin: .15rem 0; }
+
+.shortcut-box { border-top: 1px solid var(--border); padding: .3rem .55rem .5rem;
+  font-size: .74rem; color: var(--text-muted); max-height: 34vh; display: flex;
+  flex-direction: column; }
+/* The header is the way out: once the keys are learned the box is furniture,
+   and furniture that cannot be moved out of the way is a nuisance. Clicking it
+   folds the sheet to this one line, and the choice is remembered. */
+.shortcut-head { display: flex; align-items: center; gap: .35rem; width: 100%;
+  border: 0; background: none; cursor: pointer; font: inherit; font-size: .66rem;
+  font-weight: 700; text-transform: uppercase; letter-spacing: .04em;
+  color: var(--sidebar-section); padding: .3rem .35rem; border-radius: 6px; }
+.shortcut-head:hover { background: var(--hover-tint); color: var(--text-muted); }
+.shortcut-glyph { display: flex; margin-left: auto; }
+.shortcut-box.collapsed .shortcut-glyph { transform: rotate(180deg); }
+.shortcut-body { overflow-y: auto; padding: .15rem .35rem 0; }
+.shortcut-box.collapsed .shortcut-body { display: none; }
+.shortcut-box:not(.open) .shortcut-row:nth-child(n+10) { display: none; }
+.shortcut-more { border: 0; background: none; padding: .25rem 0 0; cursor: pointer;
+  color: var(--accent); font-size: .72rem; }
+.shortcut-more:hover { text-decoration: underline; }
+.shortcut-row { display: flex; gap: .5rem; align-items: center; padding: .1rem 0; }
+.shortcut-row kbd { min-width: 2.1rem; text-align: center; }
+.version-line { font-size: .66rem; color: var(--text-faint); padding: .35rem .35rem 0; }
+
+/* --- Toolbar --- */
+.toolbar { display: flex; align-items: center; gap: .5rem; padding: .5rem .8rem;
+  border-bottom: 1px solid var(--border); background: var(--bg); -webkit-app-region: drag; }
+.toolbar button, .toolbar input, .toolbar label { -webkit-app-region: no-drag; }
+.view-title { font-size: 1.02rem; font-weight: 650; margin: 0 .3rem; letter-spacing: -.01em;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.count-note { font-size: .74rem; color: var(--text-muted); background: var(--bg-elev);
+  border: 1px solid var(--border); border-radius: 20px; padding: .1rem .5rem;
+  font-variant-numeric: tabular-nums; white-space: nowrap; }
+.size-pair { display: flex; }
+.size-pair .icon-btn { padding: .25rem .35rem; }
+
+.btn { border: 1px solid var(--border-strong); background: var(--bg); border-radius: 7px;
+  padding: .3rem .7rem; font-size: .84rem; cursor: pointer; display: inline-flex;
+  align-items: center; gap: .35rem; }
+.btn:hover { background: var(--hover-tint-soft); }
+.btn.primary { background: var(--accent); border-color: var(--accent); color: #fff; }
+.btn.primary:hover { filter: brightness(1.06); }
+.btn.danger { color: var(--danger-text); border-color: var(--border); }
+.btn.danger.solid { background: var(--danger); border-color: var(--danger); color: #fff; }
+.btn.danger.solid:hover { filter: brightness(1.08); }
+.btn:disabled { opacity: .5; cursor: not-allowed; }
+
+.view-switch { display: flex; border: 1px solid var(--border-strong); border-radius: 7px;
+  overflow: hidden; flex: 0 0 auto; }
+.view-switch button { border: 0; background: var(--bg); padding: .3rem .7rem; font-size: .82rem;
+  cursor: pointer; border-right: 1px solid var(--border); }
+.view-switch button:last-child { border-right: 0; }
+.view-switch button:hover { background: var(--hover-tint-soft); }
+.view-switch button.active { background: var(--accent); color: #fff; }
+
+/* --- Filter --- */
+.filter-region { border-bottom: 1px solid var(--border); background: var(--bg); position: relative; }
+.filter-bar { display: flex; align-items: center; gap: .4rem; padding: .35rem .8rem; }
+.filter-icon { color: var(--text-muted); display: inline-flex; }
+#filter-input { flex: 1; border: 1px solid var(--border); background: var(--bg-elev);
+  border-radius: 7px; padding: .3rem .6rem; font-size: .84rem; color: var(--text); min-width: 0; }
+#filter-input:focus { outline: 2px solid var(--accent-soft); outline-offset: -1px; }
+/* Relevance or date: only there when the results have a relevance to sort by. */
+.sort-switch { display: flex; border: 1px solid var(--border); border-radius: 7px; overflow: hidden;
+  flex: 0 0 auto; }
+.sort-switch button { border: 0; background: var(--bg); padding: .22rem .55rem; font-size: .76rem;
+  cursor: pointer; color: var(--text-muted); border-right: 1px solid var(--border); }
+.sort-switch button:last-child { border-right: 0; }
+.sort-switch button.active { background: var(--accent-weak); color: var(--text); font-weight: 600; }
+/* What the bar understood, quietly, and the places the words could mean. A
+   line under the bar rather than a popup: nothing here needs answering. */
+.filter-extra { display: flex; flex-wrap: wrap; align-items: center; gap: .35rem;
+  padding: 0 .8rem .4rem 2.35rem; }
+.filter-extra:empty { display: none; }
+.filter-errors { font-size: .74rem; color: var(--warning); }
+.filter-note { font-size: .74rem; color: var(--text-muted); }
+.place-chip { display: inline-flex; align-items: center; gap: .35rem; border: 1px solid var(--border);
+  background: var(--bg-elev); border-radius: 999px; padding: .12rem .6rem; font-size: .76rem;
+  color: var(--text); cursor: pointer; max-width: 100%; }
+.place-chip:hover { border-color: var(--accent); color: var(--accent); }
+.place-chip .chip-n { color: var(--text-faint); font-variant-numeric: tabular-nums; }
+.place-chip .chip-icon { display: inline-flex; color: var(--text-muted); }
+
+/* --- Stage --- */
+#stage { flex: 1; min-height: 0; position: relative; display: flex; }
+
+/* =========================================================================
+   The grid
+   ========================================================================= */
+
+.grid-view { flex: 1; min-width: 0; overflow-y: auto; overflow-x: hidden; position: relative;
+  padding: 0 .8rem 6rem; overflow-anchor: none; outline: none; }
+/* The scrubber is the scrollbar while it is on screen; two of them side by
+   side is one too many, and the native one knows nothing about months. */
+#stage.scrubbing .grid-view { scrollbar-width: none; }
+#stage.scrubbing .grid-view::-webkit-scrollbar { display: none; }
+
+.grid-head:empty { display: none; }
+.grid-head { padding: .7rem 0 .2rem; }
+
+/* A day, and its pictures. `content-visibility` lets a library of years skip
+   laying out everything that is not on screen; the intrinsic size is written by
+   the grid from the layout it computed, so the scrollbar does not jump as days
+   come into view. */
+.day { content-visibility: auto; contain-intrinsic-size: auto 400px; }
+/* One undivided run (relevance order): no heading to give it air, so this. */
+.day.flat { padding-top: .7rem; }
+.day-head { position: sticky; top: 0; z-index: 3; display: flex; align-items: baseline; gap: .5rem;
+  padding: .75rem .1rem .4rem; background: var(--bg); font-size: .86rem; font-weight: 620;
+  letter-spacing: -.005em; }
+.day-city { font-weight: 400; color: var(--text-muted); font-size: .8rem;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.day-count { font-weight: 400; color: var(--text-faint); font-size: .74rem;
+  font-variant-numeric: tabular-nums; }
+.day-check { align-self: center; display: inline-flex; border: 0; background: none; padding: 0;
+  cursor: pointer; color: var(--text-faint); opacity: 0; border-radius: 50%; }
+.day-head:hover .day-check, .grid-view.selecting .day-check { opacity: 1; }
+.day-check:hover { color: var(--accent); }
+.day-check.on { color: var(--accent); opacity: 1; }
+
+.rows { display: flex; flex-direction: column; gap: var(--tile-gap); }
+.row { display: flex; gap: var(--tile-gap); }
+
+.tile { position: relative; flex: 0 0 auto; overflow: hidden; background: var(--placeholder);
+  cursor: pointer; border-radius: 2px; user-select: none; -webkit-user-select: none;
+  outline: none; }
+.tile img { display: block; width: 100%; height: 100%; object-fit: cover;
+  transition: transform .12s ease-out; -webkit-user-drag: none; }
+/* No thumbnail yet: the kind of thing it is, where the picture will be. */
+.tile-ph { position: absolute; inset: 0; display: grid; place-items: center; color: var(--text-faint); }
+.tile-ph svg { opacity: .7; }
+/* A darkening at the top edge, only on hover or while selecting, so the check
+   circle is readable on a white sky. */
+.tile::before { content: ""; position: absolute; inset: 0 0 auto; height: 44px; z-index: 1;
+  background: linear-gradient(rgba(0,0,0,.32), transparent); opacity: 0; transition: opacity .12s;
+  pointer-events: none; }
+.tile:hover::before, .grid-view.selecting .tile::before { opacity: 1; }
+.tile-check { position: absolute; z-index: 2; top: 6px; left: 6px; width: 22px; height: 22px;
+  padding: 0; border: 0; border-radius: 50%; background: none; cursor: pointer; opacity: 0;
+  color: #fff; display: grid; place-items: center; transition: opacity .12s; }
+.tile-check svg { filter: drop-shadow(0 0 2px rgba(0,0,0,.45)); }
+.tile:hover .tile-check, .grid-view.selecting .tile-check { opacity: 1; }
+.tile-check:hover { color: #fff; transform: scale(1.08); }
+/* Selected: the picture steps back from its frame and the circle fills, the
+   way every photo app since iPhoto has said it. */
+.tile.selected { background: var(--accent-weak); }
+.tile.selected img, .tile.selected .tile-ph { transform: scale(.88); border-radius: 4px; }
+.tile.selected .tile-check { opacity: 1; background: var(--accent); color: #fff;
+  box-shadow: 0 0 0 2px #fff; }
+.tile.selected .tile-check svg { filter: none; }
+/* The keyboard's position. Drawn inside the tile, as a layer over the
+   picture: each day is paint-contained (content-visibility), so a ring drawn
+   outside the tile would be cut off at the edges of the grid. */
+.tile::after { content: ""; position: absolute; inset: 0; z-index: 3; pointer-events: none;
+  border: 3px solid var(--accent); box-shadow: inset 0 0 0 2px var(--bg); opacity: 0;
+  border-radius: 2px; }
+.tile.focused::after { opacity: 1; }
+/* "Show in all photos": the ring swells a few times so the eye finds it in a
+   screen full of pictures, then stays as the keyboard's position. */
+@media (prefers-reduced-motion: no-preference) {
+  .tile.revealed::after { animation: reveal .55s ease-in-out 3; }
+}
+@keyframes reveal { 50% { border-width: 9px; } }
+
+.badge { position: absolute; z-index: 2; display: inline-flex; align-items: center; gap: .2rem;
+  font-size: .68rem; font-weight: 650; color: #fff; letter-spacing: .02em;
+  text-shadow: 0 0 3px rgba(0,0,0,.6); pointer-events: none; font-variant-numeric: tabular-nums; }
+.badge svg { filter: drop-shadow(0 0 2px rgba(0,0,0,.5)); }
+.badge.video { right: 6px; top: 6px; }
+.badge.live { right: 6px; top: 6px; }
+.badge.warn { left: 6px; bottom: 6px; color: #ffd27a; }
+/* The date, on hover, in a relevance-ordered grid where there are no day
+   headers to say it. */
+.tile-date { position: absolute; z-index: 2; left: 0; right: 0; bottom: 0; padding: 1.2rem .4rem .3rem;
+  font-size: .7rem; color: #fff; background: linear-gradient(transparent, rgba(0,0,0,.55));
+  opacity: 0; transition: opacity .12s; pointer-events: none; white-space: nowrap;
+  overflow: hidden; text-overflow: ellipsis; }
+.tile:hover .tile-date { opacity: 1; }
+/* The heart set on the phone, bottom left as Photos draws it. */
+.badge.fav { left: 6px; bottom: 6px; }
+.tile.fav .tile-date { padding-left: 1.6rem; }
+
+/* A video under a resting mouse (app.hover.js): the storyboard frame under
+   the pointer, or the clip itself once it plays. Under the badges and the
+   select circle, so the duration stays readable, and never in the way of a
+   click or a drag. */
+.tile-motion { position: absolute; inset: 0; z-index: 0; pointer-events: none;
+  background-repeat: no-repeat; }
+.tile.selected .tile-motion { transform: scale(.88); border-radius: 4px; overflow: hidden; }
+.tile-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover;
+  display: block; opacity: 0; transition: opacity .15s; }
+.tile-video.on { opacity: 1; }
+.tile-progress { position: absolute; z-index: 1; left: 0; bottom: 0; height: 2px; width: 0;
+  background: #fff; box-shadow: 0 0 3px rgba(0,0,0,.6); }
+
+/* Possibly explicit, blurred until hovered. Scaled up a little so the blur's
+   soft edge falls outside the tile instead of showing the background. */
+.tile.veiled img { filter: blur(22px) brightness(.7); transform: scale(1.15);
+  transition: filter .15s, transform .15s; }
+.tile.veiled.selected img { transform: scale(.88); }
+.tile-veil { position: absolute; inset: 0; z-index: 1; display: grid; place-items: center;
+  color: #fff; pointer-events: none; transition: opacity .15s; }
+.tile-veil svg { filter: drop-shadow(0 0 3px rgba(0,0,0,.55)); opacity: .9; }
+.tile.veiled:hover img { filter: none; transform: none; }
+.tile.veiled.selected:hover img { transform: scale(.88); }
+.tile.veiled:hover .tile-veil { opacity: 0; }
+.grid-banner img.veiled { filter: blur(8px) brightness(.8); }
+
+.grid-end { padding: 1.5rem 0 1rem; text-align: center; font-size: .78rem; color: var(--text-faint); }
+.grid-empty { padding: 4rem 1rem; text-align: center; color: var(--text-muted);
+  display: flex; flex-direction: column; align-items: center; gap: .5rem; }
+.grid-empty img { width: 72px; height: 72px; opacity: .9; }
+.grid-empty h2 { margin: .3rem 0 0; font-size: 1.05rem; color: var(--text); font-weight: 650; }
+.grid-empty p { margin: 0; font-size: .86rem; max-width: 30rem; line-height: 1.45; }
+.sentinel { height: 1px; }
+.spinner { width: 18px; height: 18px; border-radius: 50%; border: 2px solid var(--border-strong);
+  border-top-color: var(--accent); animation: spin .8s linear infinite; display: inline-block; }
+
+/* "Similar to IMG_1234 · 58 photos", and the note after a timeline jump. */
+.grid-banner { display: flex; align-items: center; gap: .7rem; padding: .55rem .7rem;
+  border: 1px solid var(--border); border-radius: 10px; background: var(--bg-elev);
+  font-size: .86rem; }
+.grid-banner img { width: 52px; height: 52px; object-fit: cover; border-radius: 6px; cursor: pointer;
+  flex: 0 0 auto; background: var(--placeholder); }
+/* A face search's banner: the face, round, as the info panel draws it. */
+.grid-banner img.face { border-radius: 50%; }
+.banner-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: .1rem; }
+.banner-title { font-weight: 620; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.banner-sub { font-size: .76rem; color: var(--text-muted); }
+.grid-banner.slim { padding: .35rem .6rem; font-size: .8rem; }
+
+/* New photos arrived while you were scrolled down. A pill over the grid
+   rather than a jump: yanking the page from under a reader is the one thing
+   this must not do. */
+.new-pill { position: absolute; z-index: 20; top: .8rem; left: 50%; transform: translateX(-50%);
+  border: 0; border-radius: 999px; background: var(--accent); color: #fff; padding: .4rem .9rem;
+  font-size: .82rem; font-weight: 600; box-shadow: var(--shadow); cursor: pointer;
+  display: inline-flex; align-items: center; gap: .35rem; }
+.new-pill:hover { filter: brightness(1.06); }
+
+/* --- The selection bar --- */
+.selbar { position: absolute; z-index: 25; left: 50%; bottom: 1.1rem; transform: translateX(-50%);
+  display: flex; align-items: center; gap: .15rem; padding: .3rem .4rem .3rem .8rem;
+  background: var(--bg); border: 1px solid var(--border-strong); border-radius: 12px;
+  box-shadow: var(--shadow); max-width: calc(100% - 1.5rem); }
+.sel-count { font-size: .86rem; font-weight: 650; margin-right: .5rem; white-space: nowrap;
+  font-variant-numeric: tabular-nums; }
+.sel-btn { display: inline-flex; align-items: center; gap: .3rem; border: 0; background: none;
+  padding: .35rem .55rem; border-radius: 7px; font-size: .82rem; cursor: pointer; white-space: nowrap; }
+.sel-btn:hover { background: var(--hover-tint-strong); }
+.sel-btn:disabled { opacity: .4; cursor: default; }
+.sel-btn:disabled:hover { background: none; }
+.sel-btn.danger { color: var(--danger-text); }
+
+/* --- The scrubber --- */
+.scrubber { position: relative; flex: 0 0 var(--scrub-w); width: var(--scrub-w);
+  margin: .5rem 0 .5rem; user-select: none; cursor: pointer; touch-action: none; }
+.scrub-year { position: absolute; right: .55rem; transform: translateY(-1px); font-size: .68rem;
+  font-weight: 650; color: var(--text-muted); font-variant-numeric: tabular-nums; pointer-events: none;
+  line-height: 1; }
+.scrub-dot { position: absolute; right: .55rem; width: 3px; height: 3px; border-radius: 50%;
+  background: var(--text-faint); opacity: .6; pointer-events: none; }
+/* Where the grid is. Accent, so it is the thing the eye finds on the strip. */
+.scrub-now { position: absolute; right: 0; left: .6rem; height: 2px; background: var(--accent);
+  pointer-events: none; transition: top .12s ease-out; border-radius: 2px; }
+.scrub-hover { position: absolute; right: 0; left: 0; height: 1px; background: var(--text-muted);
+  pointer-events: none; }
+/* The month under the pointer or the one being scrolled through, beside the
+   strip, where the eye already is. */
+.scrub-bubble { position: absolute; right: calc(100% + .3rem); transform: translateY(-50%);
+  background: light-dark(#1d1d1f, #f5f5f7); color: light-dark(#f5f5f7, #1d1d1f);
+  border-radius: 999px; padding: .2rem .6rem; font-size: .76rem; font-weight: 600;
+  white-space: nowrap; pointer-events: none; box-shadow: var(--shadow); z-index: 30; }
+
+/* =========================================================================
+   The map
+   ========================================================================= */
+
+/* Over the grid, not instead of it: the grid keeps its place underneath. */
+.map-view { position: absolute; inset: 0; z-index: 30; display: flex; flex-direction: column;
+  background: var(--bg); }
+#stage.on-map .selbar, #stage.on-map .new-pill { display: none; }
+.map-canvas { flex: 1; min-height: 0; background: var(--bg-elev); z-index: 0; }
+.leaflet-container { background: var(--bg-elev); font-family: var(--font); }
+.leaflet-container a { color: var(--accent); }
+/* The tiles are drawn for daylight. In the dark they are turned inside out and
+   dimmed rather than swapped for a second tile source, which would be a second
+   setting and a second server to trust. */
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) .map-tiles { filter: invert(1) hue-rotate(180deg) brightness(.85) contrast(.9) saturate(.6); }
+}
+:root[data-theme="dark"] .map-tiles { filter: invert(1) hue-rotate(180deg) brightness(.85) contrast(.9) saturate(.6); }
+.leaflet-bar a { background: var(--bg); color: var(--text); border-bottom-color: var(--border); }
+.leaflet-bar a:hover { background: var(--bg-elev); color: var(--text); }
+.leaflet-bar { border: 1px solid var(--border-strong) !important; box-shadow: var(--shadow) !important; }
+
+/* A cluster: the newest picture in it, round, with how many are behind it. */
+.cl-icon { background: none; border: 0; }
+.cl { position: relative; width: 100%; height: 100%; border-radius: 50%; border: 2.5px solid #fff;
+  box-shadow: 0 1px 4px rgba(0,0,0,.45); background: var(--placeholder); cursor: pointer; }
+/* Qualified past Leaflet's own `.leaflet-marker-pane img { width: auto }`,
+   which would otherwise draw the thumbnail at its natural size. */
+.leaflet-container .leaflet-marker-pane .cl img { width: 100%; height: 100%; object-fit: cover;
+  border-radius: 50%; display: block; }
+.cl:hover { border-color: var(--accent-soft); transform: scale(1.06); }
+.cl-n { position: absolute; top: -6px; right: -8px; min-width: 20px; height: 20px; padding: 0 5px;
+  border-radius: 999px; background: var(--accent); color: #fff; font-size: .68rem; font-weight: 700;
+  display: grid; place-items: center; border: 1.5px solid #fff; font-variant-numeric: tabular-nums; }
+
+.map-bar { display: flex; align-items: center; gap: .6rem; padding: .45rem .8rem;
+  border-top: 1px solid var(--border); background: var(--bg); font-size: .84rem; flex-wrap: wrap; }
+.map-bar .grow { min-width: .5rem; }
+.map-note { color: var(--text-muted); font-size: .8rem; }
+.map-attrib { font-size: .68rem; color: var(--text-faint); }
+.map-attrib a { color: var(--text-muted); }
+.map-empty { position: absolute; z-index: 500; left: 50%; top: 1rem; transform: translateX(-50%);
+  background: var(--bg); border: 1px solid var(--border-strong); border-radius: 999px;
+  padding: .35rem .8rem; font-size: .8rem; color: var(--text-muted); box-shadow: var(--shadow); }
+
+/* =========================================================================
+   The viewer
+   ========================================================================= */
+
+/* Always dark, whatever the theme: a photograph is judged against black, and a
+   white frame around a night shot makes it look like a hole. The info panel is
+   the part that follows the theme, because it is text. */
+.viewer { position: fixed; inset: 0; z-index: 90; background: #0b0b0c; color: #f5f5f7;
+  display: grid; grid-template-columns: minmax(0, 1fr) auto; grid-template-rows: minmax(0, 1fr);
+  color-scheme: dark; }
+.vw-main { position: relative; display: flex; flex-direction: column; min-width: 0; min-height: 0; }
+.vw-bar { position: absolute; z-index: 5; top: 0; left: 0; right: 0; display: flex; align-items: center;
+  gap: .2rem; padding: .45rem .6rem; background: linear-gradient(rgba(0,0,0,.6), transparent);
+  transition: opacity .2s; }
+.viewer.idle .vw-bar, .viewer.idle .vw-nav { opacity: 0; }
+.vw-btn { display: inline-flex; align-items: center; justify-content: center; gap: .3rem;
+  background: none; border: 0; cursor: pointer; border-radius: 8px; padding: .4rem .5rem;
+  color: #e8e8ea; font-size: .8rem; }
+.vw-btn:hover { background: rgba(255,255,255,.12); color: #fff; }
+.vw-btn.on { background: rgba(255,255,255,.18); color: #fff; }
+.vw-btn:disabled { opacity: .35; cursor: default; }
+.vw-title { flex: 1; min-width: 0; display: flex; flex-direction: column; padding: 0 .5rem; }
+.vw-date { font-size: .88rem; font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vw-place { font-size: .74rem; color: #b0b0b5; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.vw-pos { font-size: .72rem; color: #8d8d92; font-variant-numeric: tabular-nums; padding: 0 .3rem;
+  white-space: nowrap; }
+/* LIVE, as Photos draws it: a word in a pill, and the pill is the control. */
+.vw-live { border: 1px solid rgba(255,255,255,.5); border-radius: 999px; padding: .2rem .55rem;
+  font-size: .68rem; font-weight: 700; letter-spacing: .06em; }
+.vw-live.playing { background: #fff; color: #111; }
+
+.vw-stage { flex: 1; min-height: 0; display: grid; place-items: center; position: relative;
+  overflow: hidden; touch-action: pan-y; }
+.vw-frame { position: relative; }
+.vw-frame img, .vw-frame video { position: absolute; inset: 0; width: 100%; height: 100%;
+  object-fit: contain; display: block; }
+.vw-frame img { cursor: grab; }
+/* The Live Photo's motion, laid exactly over the still and faded in while it
+   plays, so the moment it ends the still is simply there again. */
+.vw-frame video.vw-motion { opacity: 0; transition: opacity .18s; pointer-events: none; }
+.vw-frame video.vw-motion.playing { opacity: 1; }
+/* Sized to its text, up to the stage's width: with `left: 50%` alone the
+   box would be capped at half the stage and wrap on a phone. */
+.vw-wait { position: absolute; z-index: 4; left: 50%; bottom: calc(var(--sheet, 0px) + 1.4rem); transform: translateX(-50%);
+  width: max-content; max-width: calc(100% - 2rem);
+  display: flex; align-items: center; gap: .5rem; background: rgba(0,0,0,.7); color: #f5f5f7;
+  border-radius: 999px; padding: .4rem .9rem; font-size: .82rem; }
+.vw-wait .spinner { border-color: rgba(255,255,255,.3); border-top-color: #fff; width: 15px; height: 15px; }
+.vw-nav { position: absolute; z-index: 4; top: 50%; transform: translateY(-50%); width: 44px; height: 64px;
+  border: 0; border-radius: 10px; background: rgba(0,0,0,.28); color: #fff; cursor: pointer;
+  display: grid; place-items: center; transition: opacity .2s, background .12s; }
+.vw-nav:hover { background: rgba(0,0,0,.55); }
+.vw-nav.prev { left: .6rem; }
+.vw-nav.next { right: .6rem; }
+.vw-nav:disabled { opacity: 0 !important; pointer-events: none; }
+
+/* A flagged picture, blurred behind a Show button until asked for. The frame
+   clips the blur, so it reads as a picture held back, not as a glow. */
+.vw-stage.veiled .vw-frame { overflow: hidden; }
+.vw-stage.veiled .vw-frame > img, .vw-stage.veiled .vw-frame > video,
+.vw-stage.veiled .vw-still, .vw-stage.veiled .vw-film { filter: blur(40px) brightness(.6); }
+.vw-veil { position: absolute; z-index: 4; left: 50%; top: 50%; transform: translate(-50%, -50%);
+  display: flex; flex-direction: column; align-items: center; gap: .55rem; text-align: center;
+  background: rgba(0,0,0,.5); color: #f5f5f7; border-radius: 14px; padding: 1rem 1.5rem; }
+.vw-veil-icon { display: inline-flex; opacity: .85; }
+.vw-veil-text { font-size: .86rem; font-weight: 600; }
+.vw-veil-actions { display: flex; gap: .5rem; flex-wrap: wrap; justify-content: center; }
+
+/* The storyboard as a filmstrip, while the playable copy is being made; the
+   frame under the pointer (on the strip or on the video) is shown large. */
+.vw-film { position: absolute; z-index: 4; left: 50%; bottom: calc(var(--sheet, 0px) + 4.1rem);
+  transform: translateX(-50%); width: max-content;
+  display: flex; gap: 3px; padding: 4px; background: rgba(0,0,0,.55); border-radius: 8px;
+  max-width: calc(100% - 1rem); overflow: hidden; }
+.vw-film-cell { flex: 0 0 auto; border-radius: 3px; background-repeat: no-repeat; cursor: pointer;
+  opacity: .8; transition: opacity .1s; }
+.vw-film-cell:hover, .vw-film-cell.on { opacity: 1; box-shadow: inset 0 0 0 2px #fff; }
+.vw-still { position: absolute; inset: 0; z-index: 1; background-repeat: no-repeat; pointer-events: none; }
+/* The face pointed at in the info panel, outlined on the photo. White with a
+   dark edge on both sides, so it reads on a white wall and on a night sky. */
+.vw-face { position: absolute; z-index: 2; border: 2px solid #fff; border-radius: 4px; pointer-events: none;
+  box-shadow: 0 0 0 1px rgba(0,0,0,.5), inset 0 0 0 1px rgba(0,0,0,.5); }
+
+/* The info panel. A column beside the picture on a desktop, a sheet over the
+   bottom of it on a phone (see the narrow block at the end). */
+.vw-info { width: 340px; background: var(--bg); color: var(--text); color-scheme: light dark;
+  border-left: 1px solid var(--border); overflow-y: auto; display: flex; flex-direction: column; }
+:root[data-theme="light"] .vw-info { color-scheme: light; }
+:root[data-theme="dark"] .vw-info { color-scheme: dark; }
+.info-head { display: flex; align-items: center; gap: .5rem; padding: .7rem .9rem;
+  border-bottom: 1px solid var(--border); }
+.info-title { font-weight: 650; flex: 1; }
+.info-body { padding: .3rem .9rem 1.2rem; display: flex; flex-direction: column; }
+.info-row { display: flex; gap: .7rem; padding: .6rem 0; border-bottom: 1px solid var(--border);
+  font-size: .84rem; align-items: flex-start; }
+.info-row:last-child { border-bottom: 0; }
+.info-icon { color: var(--text-muted); display: inline-flex; padding-top: .1rem; flex: 0 0 auto; }
+.info-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: .15rem; }
+.info-line { overflow-wrap: anywhere; }
+.info-sub { font-size: .76rem; color: var(--text-muted); overflow-wrap: anywhere; }
+.info-path { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .72rem;
+  color: var(--text-muted); user-select: all; overflow-wrap: anywhere; }
+.info-error { color: var(--danger); font-size: .8rem; }
+.info-map { height: 150px; border-radius: 8px; overflow: hidden; margin-top: .45rem;
+  border: 1px solid var(--border); }
+.info-row.fav .info-icon { color: var(--heart); }
+.info-chips { display: flex; flex-wrap: wrap; gap: .3rem; }
+/* The faces in a picture, round, each one a button to the other pictures of
+   that person. The ring on hover is the accent; the keyboard's is set off
+   from the crop, so the two are never mistaken for each other. */
+.info-faces { display: flex; flex-wrap: wrap; gap: .4rem; }
+.face-btn { width: 46px; height: 46px; padding: 0; border: 0; border-radius: 50%; overflow: hidden;
+  flex: 0 0 auto; cursor: pointer; background: var(--placeholder);
+  box-shadow: 0 0 0 1px var(--border); transition: box-shadow .12s; }
+.face-btn img { display: block; width: 100%; height: 100%; object-fit: cover; }
+.face-btn:hover { box-shadow: 0 0 0 2px var(--accent); }
+.face-btn:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+/* The text read in a picture: a line per line, selectable for copying, and
+   the words a `text:` search asked for marked. A photo's lines outline
+   themselves on it while the pointer is on them. */
+.info-text { font-size: .8rem; line-height: 1.35; overflow-wrap: anywhere; user-select: text;
+  max-height: 22rem; overflow-y: auto; margin-bottom: .2rem; }
+.info-text-line { padding: .05rem .25rem; margin: 0 -.25rem; border-radius: 3px; }
+.info-text-line:hover { background: var(--hover-tint-strong); }
+.info-text mark { background: var(--accent); color: var(--bg); border-radius: 2px; padding: 0 .1em; }
+.face-btn img.veiled { filter: blur(6px) brightness(.8); transform: scale(1.15); }
+.info-line .link { font-size: inherit; }
+.info-actions { display: flex; flex-wrap: wrap; gap: .35rem; padding: .7rem 0 .2rem; }
+.info-actions .btn { font-size: .78rem; padding: .28rem .55rem; }
+.mini-dot { width: 14px; height: 14px; border-radius: 50%; background: var(--accent);
+  border: 2.5px solid #fff; box-shadow: 0 1px 3px rgba(0,0,0,.5); }
+
+/* =========================================================================
+   Modal, login, help
+   ========================================================================= */
+
+.modal-backdrop { position: fixed; inset: 0; background: rgba(0,0,0,.35); z-index: 100;
+  display: grid; place-items: center; padding: 1rem; }
+.modal-card { background: var(--bg); border: 1px solid var(--border-strong); border-radius: 12px;
+  box-shadow: var(--shadow); width: min(560px, 100%); max-height: 90vh; display: flex;
+  flex-direction: column; overflow: hidden; color: var(--text); }
+.modal-card.small { width: min(340px, 100%); }
+.modal-head { display: flex; align-items: center; gap: .5rem; padding: .7rem .9rem;
+  border-bottom: 1px solid var(--border); }
+.modal-title { font-weight: 650; flex: 1; display: flex; align-items: center; gap: .45rem; }
+.modal-title img { width: 22px; height: 22px; }
+.modal-body { padding: .8rem .9rem; overflow-y: auto; display: flex; flex-direction: column; gap: .55rem; }
+.modal-foot { display: flex; align-items: center; gap: .5rem; padding: .7rem .9rem;
+  border-top: 1px solid var(--border); background: var(--bg-elev); }
+.modal-error { color: var(--danger); font-size: .82rem; }
+/* The delete confirmation. The card holds the focus when it opens (see
+   App.confirm), and a focus ring around a whole card is noise. */
+.confirm-card { width: min(430px, 100%); }
+.confirm-card.wide { width: min(640px, 100%); }
+.confirm-card:focus { outline: none; }
+.confirm-backdrop { z-index: 120; }
+.confirm-text { margin: 0; font-size: .86rem; line-height: 1.45; }
+.confirm-text code { white-space: nowrap; }
+.confirm-note { color: var(--text-muted); font-size: .8rem; }
+.confirm-warn { color: var(--warning); font-weight: 600; }
+.confirm-heading { margin-top: .3rem; font-size: .7rem; font-weight: 700; text-transform: uppercase;
+  letter-spacing: .04em; color: var(--text-muted); }
+/* The commands exactly as they will run: monospace, selectable, and
+   scrolled rather than wrapped, so a line reads as the one command it is. */
+.confirm-cmds { margin: 0; padding: .5rem .6rem; background: var(--bg-elev); border: 1px solid var(--border);
+  border-radius: 7px; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .74rem;
+  line-height: 1.55; overflow: auto; max-height: 11rem; user-select: text; color: var(--text);
+  /* Wrapped, never cut off: this is the list somebody agrees to, so every
+     character of every line has to be on screen without scrolling
+     sideways. Long paths break anywhere; each move still starts on a line
+     of its own. */
+  white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.fld { display: flex; flex-direction: column; gap: .2rem; flex: 1; min-width: 0; }
+.fld-label { font-size: .7rem; text-transform: uppercase; letter-spacing: .04em; color: var(--text-muted); }
+.in { border: 1px solid var(--border-strong); background: var(--bg); color: var(--text);
+  border-radius: 7px; padding: .35rem .5rem; font-size: .88rem; font-family: inherit; width: 100%; }
+.in:focus { outline: 2px solid var(--accent-soft); outline-offset: -1px; }
+
+.fatal { padding: 3rem; max-width: 40rem; }
+.fatal h2 { margin: 0 0 .5rem; }
+
+#filter-help-card { width: min(660px, 100%); }
+.help-lede { margin: 0 0 .8rem; font-size: .88rem; color: var(--text); line-height: 1.5; }
+.modal-body h3 { margin: 1.1rem 0 .4rem; font-size: .8rem; text-transform: uppercase;
+  letter-spacing: .04em; color: var(--text-muted); }
+.help-table { width: 100%; border-collapse: collapse; font-size: .86rem; }
+.help-table td { padding: .3rem .5rem .3rem 0; vertical-align: top;
+  border-bottom: 1px solid var(--border); }
+.help-table td:first-child { white-space: nowrap; width: 1%; }
+.help-table code, .help-lede code, .modal-body code {
+  background: var(--bg-elev); border: 1px solid var(--border); border-radius: 5px;
+  padding: .02rem .3rem; font-size: .82em; }
+.help-code { background: var(--bg-elev); border: 1px solid var(--border); border-radius: 7px;
+  padding: .6rem .7rem; font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: .8rem; margin: 0; white-space: pre; overflow-x: auto; }
+
+/* =========================================================================
+   The key-sequence hint, and the toast
+   ========================================================================= */
+
+/* Bottom centre, out of the way of everything and readable without moving your
+   eyes off the pictures. */
+.key-hint, .toast { position: fixed; z-index: 150; left: 50%; bottom: 1.6rem;
+  transform: translateX(-50%); display: flex; align-items: center; gap: .55rem;
+  background: light-dark(#1d1d1f, #f5f5f7); color: light-dark(#f5f5f7, #1d1d1f);
+  border-radius: 999px; padding: .45rem .9rem; font-size: .84rem;
+  box-shadow: var(--shadow); pointer-events: none; max-width: calc(100% - 2rem); }
+.toast { z-index: 160; bottom: 4.6rem; }
+.toast.error { background: var(--danger); color: #fff; }
+.key-hint kbd { background: rgba(127,127,127,.25); border: 0; color: inherit;
+  font-size: .78rem; padding: .1rem .4rem; }
+.key-hint b { font-weight: 700; }
+
+/* A multi-photo drag, as the thing under the pointer: a count on a card. */
+.drag-ghost { position: fixed; top: -200px; left: -200px; padding: .45rem .8rem; border-radius: 10px;
+  background: var(--accent); color: #fff; font-size: .86rem; font-weight: 650; box-shadow: var(--shadow); }
+
+
+/* NOTE ON ORDER: this block is last in the file on purpose. It overrides the
+   sections above it, and CSS resolves ties by document order; see meercal's
+   cal.css for the evening that cost. Keep new sections *above* this line. */
+
+/* =========================================================================
+   Narrow: phones, and a window shared with something else
+   =========================================================================
+
+   The sidebar becomes a drawer rather than disappearing: hiding it took the
+   nav, the sync button and the status card with it. */
+@media (max-width: 900px) {
+  .app { grid-template-columns: 1fr; }
+  .toolbar .menu-btn { display: inline-flex; }
+
+  /* A drawer over the photos, not a column beside them. */
+  .sidebar { position: fixed; z-index: 70; top: 0; bottom: 0; left: 0;
+    width: min(82vw, 320px); transform: translateX(-101%);
+    transition: transform .18s ease-out; box-shadow: var(--shadow); }
+  body.drawer-open .sidebar { transform: none; }
+  .scrim { display: block; position: fixed; inset: 0; z-index: 65;
+    background: rgba(0,0,0,.35); opacity: 0; pointer-events: none;
+    transition: opacity .18s ease-out; }
+  body.drawer-open .scrim { opacity: 1; pointer-events: auto; }
+
+  .toolbar { gap: .35rem; padding: .45rem .6rem; }
+  .view-title { font-size: .95rem; margin: 0 .2rem; flex: 1; }
+  .toolbar .grow { display: none; }
+  .size-pair { display: none; }
+
+  .filter-bar { padding: .3rem .6rem; }
+  .filter-extra { padding: 0 .6rem .4rem; }
+  #filter-input { font-size: 16px; }   /* iOS zooms into anything smaller */
+
+  :root { --tile-gap: 2px; --scrub-w: 40px; }
+  .grid-view { padding: 0 .35rem 6rem; }
+  .day-head { padding: .6rem .2rem .35rem; font-size: .8rem; }
+  .scrub-year { font-size: .6rem; right: .3rem; }
+  .scrub-dot { right: .3rem; }
+  .scrub-now { left: .3rem; }
+
+  .selbar { bottom: .8rem; padding: .25rem .3rem .25rem .6rem; }
+  .sel-btn .sel-label { display: none; }
+  .sel-btn { padding: .4rem .45rem; }
+
+  /* The viewer: the info panel becomes a sheet over the bottom half. */
+  .viewer { grid-template-columns: minmax(0, 1fr); }
+  .vw-info { position: absolute; z-index: 8; left: 0; right: 0; bottom: 0; width: auto;
+    max-height: 58%; border-left: 0; border-top: 1px solid var(--border);
+    border-radius: 14px 14px 0 0; box-shadow: var(--shadow); }
+  .vw-nav { display: none; }
+  .vw-btn .vw-label { display: none; }
+  .vw-pos { display: none; }
+
+  .modal-card { width: 100%; max-height: 92vh; }
+  .key-hint { bottom: 5.2rem; }
+  .toast { bottom: 5.2rem; }
+}
+
+@media (max-width: 480px) {
+  .vw-btn.optional { display: none; }
+  .map-bar { font-size: .78rem; gap: .4rem; }
+  .map-attrib { flex-basis: 100%; }
+}
+
+/* A phone, rather than a small window: the shortcut list is furniture for a
+   keyboard that is not there. */
+@media (max-width: 900px) and (pointer: coarse) {
+  .shortcut-box { display: none; }
+}

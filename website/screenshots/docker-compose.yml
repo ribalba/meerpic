@@ -1,0 +1,87 @@
+# The demo stack the website screenshots are taken of: meerpic as it ships,
+# built from this checkout, pointed at a library of CC0 demo photos instead of
+# anybody's own.
+#
+#   make -C website screenshots        # builds, fills and photographs it
+#
+# Everything here is separate from the stack in ../../docker-compose.yml, on
+# purpose: its own project name (so its own containers and database volume),
+# its own image tags (so it never replaces the :local images a running stack
+# uses), its own port, and no mount of ~/Pictures, ~/.cache/meerpic or
+# meerpic.toml. MEERPIC_CONFIG="" makes the app ignore any config file, so
+# every setting it has is the environment below.
+#
+# DEMO_DIR (set by website/Makefile) holds the library, the cache and the
+# downloaded sources. It is mounted at the same path it has on the host, as
+# the real stack does with your picture folder.
+name: meerpic-demo
+
+x-env: &env
+  MEERPIC_CONFIG: ""
+  DATABASE_URL: postgresql+psycopg://meerpic:meerpic@db:5432/meerpic_demo
+  LIBRARY_ROOTS: '{"icloud": "${DEMO_DIR:?set DEMO_DIR}/library/iCloud", "camera": "${DEMO_DIR}/library/Camera"}'
+  CACHE_DIR: ${DEMO_DIR}/cache
+  SECRET_KEY: demo-only-not-a-secret
+  # Fixed rather than the host's, so the day headings and times in the shots
+  # do not depend on who ran them where.
+  TIMEZONE: Europe/Berlin
+  TZ: Europe/Berlin
+  # Sync stays switched on so the UI shows its button, but nothing ever asks
+  # for one, and the album refresh that would list iCloud is off: the albums
+  # and favourites are written by seed.py instead.
+  SYNC_INTERVAL: "0"
+  SYNC_ALBUMS: "false"
+  HOME: /tmp
+  HF_HUB_DISABLE_TELEMETRY: "1"
+  # For build_library.py, which runs in the agent container.
+  DEMO_DIR: ${DEMO_DIR}
+
+services:
+  db:
+    image: pgvector/pgvector:pg18
+    environment:
+      POSTGRES_USER: meerpic
+      POSTGRES_PASSWORD: meerpic
+      POSTGRES_DB: meerpic_demo
+    volumes:
+      - demo-db:/var/lib/postgresql
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U meerpic -d meerpic_demo"]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+    # No ports: seed.py runs inside the agent container.
+
+  server:
+    build:
+      context: ../..
+    image: meerpic-server:demo
+    user: "${MEERPIC_UID:-1000}:${MEERPIC_GID:-1000}"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment: *env
+    volumes:
+      - ${DEMO_DIR}:${DEMO_DIR}
+    ports:
+      # 18040: the real stack has 8040 and its dev overlay 8041.
+      - "127.0.0.1:${DEMO_PORT:-18040}:8000"
+
+  agent:
+    build:
+      context: ../..
+      dockerfile: agent/Dockerfile
+    image: meerpic-agent:demo
+    user: "${MEERPIC_UID:-1000}:${MEERPIC_GID:-1000}"
+    depends_on:
+      db:
+        condition: service_healthy
+    environment: *env
+    volumes:
+      - ${DEMO_DIR}:${DEMO_DIR}
+      # build_library.py and seed.py run in here, and the library build
+      # writes the photo credits into website/public/img/screenshots/.
+      - ..:/website
+
+volumes:
+  demo-db:

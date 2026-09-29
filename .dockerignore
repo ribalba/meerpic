@@ -1,0 +1,12 @@
+.git
+.venv
+.venv-test
+**/__pycache__
+.pytest_cache
+.ruff_cache
+electron
+tests
+meerpic.toml
+.env
+data
+backups

@@ -1,0 +1,20 @@
+# meerpic-agent: runs beside your pictures, owns every write to the database
+# and the cache. Overlaps with ../requirements.txt through the shared `core`
+# package; keep those pins in step.
+#
+# Not pip-installable and needed on PATH: exiftool, ffmpeg + ffprobe (with an
+# HEVC decoder and libx264: Fedora's ffmpeg-free has neither), rclone >= 1.74
+# for iCloud Photos. agent/Dockerfile installs all of them.
+sqlalchemy==2.1.0
+pydantic==2.13.5
+pydantic-settings==2.15.0
+psycopg[binary]==3.3.6
+pgvector==0.5.0
+tzdata==2026.4
+pillow==12.3.0
+pillow-heif==1.8.0
+fastembed==0.8.1            # SigLIP 2 / CLIP image embeddings over ONNX Runtime, no torch
+numpy==2.5.3
+reverse_geocode==1.6.6      # offline GeoNames lookup: coordinates -> town, region, country
+opencv-python-headless==5.0.0.93  # the text stage's box finding and crops (agent/ocr_engine.py); headless: no libGL
+pyclipper==1.4.0            # grows each detected text region back to the line's full height

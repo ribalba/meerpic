@@ -1,0 +1,22 @@
+# meerpic.com on Coolify, as a Docker Compose resource.
+#
+# One stateless nginx container. Coolify's Traefik terminates TLS and routes
+# the domain to it; nothing is published on the host and nothing is stored, so
+# a redeploy is a rebuild and nothing else. README.md has the Coolify steps.
+#
+# The site lives in the app's repository, in website/, so the Coolify resource
+# points at this repository with Base Directory /website and Docker Compose
+# Location /docker-compose.yml (relative to that base).
+#
+# For a local preview, add the dev overlay, which publishes a port:
+#   docker compose -f docker-compose.yml -f docker-compose.dev.yml up --build
+services:
+  website:
+    build: .
+    # `expose`, not `ports`. Coolify's Traefik reaches the container over the
+    # project network. Set the domain on this service in the Coolify UI
+    # (Domains: https://meerpic.com,https://www.meerpic.com); port 80 is the
+    # one Coolify routes to when the domain names none.
+    expose:
+      - "80"
+    restart: unless-stopped

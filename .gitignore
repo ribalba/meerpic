@@ -1,0 +1,31 @@
+# --- secrets & local configuration -------------------------------------------
+meerpic.toml
+.env
+.env.*
+!.env.example
+*.pem
+
+# --- python ------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+.venv/
+.venv-test/
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+*.egg-info/
+
+# --- runtime -----------------------------------------------------------------
+data/
+backups/
+*.log
+agent.pid
+
+# --- node / electron ---------------------------------------------------------
+node_modules/
+electron/dist/
+
+# --- editors / OS ------------------------------------------------------------
+.DS_Store
+.idea/
+*.swp
