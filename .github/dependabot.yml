@@ -8,21 +8,28 @@
 #
 # Both requirements files pin exactly, and they overlap: `core` is shared, so
 # `requirements.txt` and `agent/requirements.txt` name several of the same
-# packages and are meant to stay in step. Dependabot does not know that, and
-# updates each directory on its own -- so a bump to a shared pin arrives as two
-# pull requests, and merging one without the other is how they drift apart.
+# packages and are meant to stay in step. Left to itself, Dependabot updates
+# each directory on its own, and a pull request that bumps a shared pin in one
+# file only cannot even be installed: CI installs both files together and pip
+# refuses the two pins. So Python is one entry over both directories, grouped
+# by dependency name, and a bump arrives as one pull request that changes every
+# file naming it. That holds for version updates only; a security update
+# still arrives once per directory, and the two must be merged together.
 #
-# Minor and patch updates are grouped into one pull request per ecosystem,
-# because twenty separate ones a week is how a project learns to ignore them.
-# Majors are deliberately left ungrouped: they arrive alone, because they are
-# the ones that need reading rather than merging.
+# Minor and patch updates are otherwise grouped into one pull request per
+# ecosystem, because twenty separate ones a week is how a project learns to
+# ignore them. Python's are one per dependency instead: that is the price of
+# keeping the two files in step. Majors are deliberately left ungrouped: they
+# arrive alone, because they are the ones that need reading rather than merging.
 
 version: 2
 
 updates:
   # --- Python ---------------------------------------------------------------
   - package-ecosystem: "pip"
-    directory: "/"                      # requirements.txt: the web layer
+    directories:
+      - "/"                             # requirements.txt: the web layer
+      - "/agent"                        # agent/requirements.txt: the indexer
     schedule:
       interval: "weekly"
       day: "monday"
@@ -32,20 +39,7 @@ updates:
       prefix: "deps"
     groups:
       python-minor-patch:
-        patterns: ["*"]
-        update-types: ["minor", "patch"]
-
-  - package-ecosystem: "pip"
-    directory: "/agent"                 # agent/requirements.txt: the indexer
-    schedule:
-      interval: "weekly"
-      day: "monday"
-    open-pull-requests-limit: 10
-    labels: ["dependencies", "python"]
-    commit-message:
-      prefix: "deps"
-    groups:
-      python-minor-patch:
+        group-by: dependency-name       # one PR per package, across both files
         patterns: ["*"]
         update-types: ["minor", "patch"]
 

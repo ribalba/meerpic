@@ -323,11 +323,31 @@ App.fmt = {
 App.query = (() => {
   const TOKEN = /[A-Za-z]+:"[^"]*"?|"[^"]*"?|\S+/g;
 
+  const KEYED = /^([A-Za-z]+):(.*)$/;
+  // app/query.py's KEYS. A known key with nothing after its colon takes the
+  // next token as its value unless that is a filter itself, as the server's
+  // join_dangling() reads `text: rinderpass`.
+  const KEYS = new Set(["in", "near", "bbox", "is", "year", "month", "on", "after",
+    "before", "camera", "file", "album", "similar", "face", "sort", "text"]);
+
   const unquote = (s) => s.replace(/^"/, "").replace(/"$/, "");
 
+  function joinDangling(raws) {
+    const out = [];
+    for (const raw of raws) {
+      const prev = out.length ? KEYED.exec(out[out.length - 1]) : null;
+      if (prev && !prev[2] && KEYS.has(prev[1].toLowerCase()) && !KEYED.test(raw)) {
+        out[out.length - 1] += raw;
+      } else {
+        out.push(raw);
+      }
+    }
+    return out;
+  }
+
   function tokens(text) {
-    return (String(text || "").match(TOKEN) || []).map((raw) => {
-      const m = /^([A-Za-z]+):(.*)$/.exec(raw);
+    return joinDangling(String(text || "").match(TOKEN) || []).map((raw) => {
+      const m = KEYED.exec(raw);
       if (m) return { raw, key: m[1].toLowerCase(), value: unquote(m[2]) };
       // A bare year is a filter too; see the language's `year:` shorthand.
       if (/^(19|20)\d\d$|^2100$/.test(raw)) return { raw, key: "year", value: raw };

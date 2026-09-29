@@ -158,6 +158,25 @@ def test_a_key_with_nothing_after_it_is_somebody_typing():
     assert not spec.filters and not spec.errors
 
 
+def test_a_space_after_the_colon_still_gives_the_key_its_value():
+    # It used to drop the key and search for the value as a word.
+    spec = parse_query("text: rinderpass sort:date")
+    assert spec.words == [] and spec.sort == "date" and not spec.errors
+    assert labels("text: rinderpass sort:date") == ["text:rinderpass"]
+    assert labels('text: "opening hours" cows') == ['text:"opening hours"']
+    assert labels("in: Potsdam 2024") == ["in:Potsdam", "year:2024"]
+    assert labels("year: 2024") == ["year:2024"]
+
+
+def test_a_dangling_key_does_not_swallow_the_next_filter_or_prose():
+    spec = parse_query("text: sort:date")
+    assert not spec.filters and spec.sort == "date" and not spec.errors
+    assert labels("text: in:Berlin") == ["in:Berlin"]
+    # An unknown key's colon is prose: the word stays a word.
+    spec = parse_query("Rezept: Kuchen")
+    assert spec.words == ["Kuchen"] and spec.errors == ['unknown filter "Rezept:"']
+
+
 # --- dates --------------------------------------------------------------------
 
 

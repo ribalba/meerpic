@@ -19,7 +19,15 @@ import textwrap
 from datetime import datetime, timedelta
 
 import pytest
-from agent_helpers import ROOT, add_photo, local_remote, needs_db, use_db, use_library
+from agent_helpers import (
+    ROOT,
+    add_photo,
+    local_remote,
+    needs_db,
+    needs_rclone,
+    use_db,
+    use_library,
+)
 from sqlalchemy import select
 
 from agent import albums, jobs
@@ -358,6 +366,7 @@ def test_cancel_ends_a_listing(db, lib, tmp_path, monkeypatch):
 
 
 @needs_db
+@needs_rclone
 def test_real_rclone_over_a_local_tree(db, lib, tmp_path, monkeypatch):
     """The argv the job builds, run by the real rclone: a local folder per
     album, no iCloud metadata (so matching by name, flags from membership)."""

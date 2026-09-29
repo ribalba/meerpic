@@ -2,10 +2,10 @@
 #
 # Everything the suite can use is provided, so nothing skips for want of it:
 # a Postgres with pgvector for the database tests (they skip without
-# MEERPIC_TEST_DB), and exiftool and ffmpeg for the agent's metadata,
-# thumbnail and video tests (they skip without them). A skip here would be a
-# green tick for a test that never ran, so `-ra` lists every one in the
-# summary.
+# MEERPIC_TEST_DB), exiftool and ffmpeg for the agent's metadata, thumbnail
+# and video tests, and rclone for the sync and albums tests that run it for
+# real (they skip without them). A skip here would be a green tick for a test
+# that never ran, so `-ra` lists every one in the summary.
 #
 # Python and Postgres match what ships: python:3.14-slim in both images, and
 # pgvector/pgvector:pg18 in docker-compose.yml. The search model is not
@@ -64,6 +64,22 @@ jobs:
 
       - name: Install exiftool and ffmpeg
         run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libimage-exiftool-perl ffmpeg
+
+      # The release the agent image ships, not Ubuntu's older package. The
+      # version and checksum are read from agent/Dockerfile, so there is one
+      # pin to bump.
+      - name: Install rclone
+        run: |
+          set -eu
+          version=$(sed -n 's/^ARG RCLONE_VERSION=//p' agent/Dockerfile)
+          sum=$(sed -n 's/^ARG RCLONE_SHA256_AMD64=//p' agent/Dockerfile)
+          test -n "$version" && test -n "$sum"
+          zip="rclone-v${version}-linux-amd64.zip"
+          curl -fsSL -o "$RUNNER_TEMP/$zip" "https://downloads.rclone.org/v${version}/$zip"
+          echo "$sum  $RUNNER_TEMP/$zip" | sha256sum -c -
+          unzip -q "$RUNNER_TEMP/$zip" -d "$RUNNER_TEMP/rclone"
+          sudo install -m 0755 "$RUNNER_TEMP/rclone/rclone-v${version}-linux-amd64/rclone" /usr/local/bin/rclone
+          rclone version | head -1
 
       # Both halves, as `make venv` does: the tests import the server and the
       # agent. pytest and httpx are not in either file because neither image

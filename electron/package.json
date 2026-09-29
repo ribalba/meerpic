@@ -10,6 +10,7 @@
     "email": "didi@ribalba.de"
   },
   "license": "MIT",
+  "homepage": "https://meerpic.com",
   "scripts": {
     "start": "electron . --class=meerpic",
     "pack": "electron-builder --dir",

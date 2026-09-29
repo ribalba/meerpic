@@ -16,7 +16,7 @@ import time
 from datetime import timedelta
 
 import pytest
-from agent_helpers import local_remote, needs_db, use_db, use_library
+from agent_helpers import local_remote, needs_db, needs_rclone, use_db, use_library
 
 from agent import jobs, sync
 from core.config import Settings, get_settings
@@ -326,6 +326,7 @@ def test_exclude_rules_match_one_name_exactly(name, rule):
 
 
 @needs_db
+@needs_rclone
 def test_a_sync_leaves_out_what_was_deleted_here(db, lib, tmp_path, monkeypatch):
     """The real rclone, copying from a local folder standing in for iCloud."""
     remote = local_remote(tmp_path, monkeypatch)

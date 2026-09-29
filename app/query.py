@@ -294,10 +294,37 @@ def normalize_bbox(w: float, s: float, e: float, n: float) -> tuple[float, float
 # --- the parser ---------------------------------------------------------------
 
 
+def join_dangling(tokens: list[Token]) -> list[Token]:
+    """``text: rinderpass`` as ``text:rinderpass``: a known key with nothing
+    after its colon takes the next token as its value, unless that is a
+    filter of its own.
+
+    Without this the key was dropped as half typed and the value became a
+    word, so the search looked for pictures that *look like* a Rinderpass,
+    ranked two thousand of them and showed no error. Known keys only: in
+    ``Rezept: Kuchen`` the colon is prose.
+    """
+    out: list[Token] = []
+    i = 0
+    while i < len(tokens):
+        token = tokens[i]
+        m = None if token.quoted else _KEY.match(token.text)
+        nxt = tokens[i + 1] if i + 1 < len(tokens) else None
+        if (m and not m[2].strip() and m[1].lower() in KEYS and nxt is not None
+                and (nxt.quoted or not _KEY.match(nxt.text))):
+            # `text:"opening hours"` tokenizes to this same unquoted token.
+            out.append(Token(token.text.strip() + nxt.text))
+            i += 2
+            continue
+        out.append(token)
+        i += 1
+    return out
+
+
 def parse_query(raw: str) -> QuerySpec:
     """``cows in:Potsdam 2024``, in that or any other order. Never raises."""
     spec = QuerySpec()
-    for token in tokenize(raw):
+    for token in join_dangling(tokenize(raw)):
         m = None if token.quoted else _KEY.match(token.text)
         if m is None:
             text = token.text.strip()

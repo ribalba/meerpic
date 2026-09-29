@@ -5,7 +5,7 @@ Every file a test needs is generated: JPEGs with whatever EXIF the test is
 about (Pillow writes dates, offsets, orientation and GPS), PNGs, HEICs
 (pillow-heif ships an encoder), and short videos from ffmpeg's test source.
 Nothing reads the real library. Tests that need a tool this machine lacks
-(exiftool, an H.264 encoder, zscale) skip and say which.
+(exiftool, rclone, an H.264 encoder, zscale) skip and say which.
 
 The database tests run against ``MEERPIC_TEST_DB`` and skip without it (see
 conftest.py). Each test module wraps ``use_library`` and ``use_db`` in
@@ -29,6 +29,9 @@ needs_exiftool = pytest.mark.skipif(shutil.which("exiftool") is None, reason="ex
 needs_ffmpeg = pytest.mark.skipif(
     shutil.which("ffmpeg") is None or shutil.which("ffprobe") is None, reason="ffmpeg/ffprobe not installed"
 )
+# The tests that run the real rclone through rclone_guard, which otherwise
+# execs `false` and fails instead of skipping.
+needs_rclone = pytest.mark.skipif(shutil.which("rclone") is None, reason="rclone is not installed")
 
 ROOT = "icloud"
 
