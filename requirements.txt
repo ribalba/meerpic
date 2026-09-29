@@ -6,8 +6,8 @@ starlette==1.7.0            # pinned directly, not left to FastAPI's range (see 
                             # Range header on a FileResponse is an O(n^2) CPU sink
                             # (CVE-2025-62727), and every video here is served
                             # with Range requests.
-uvicorn[standard]==0.53.0
-sqlalchemy==2.1.0
+uvicorn[standard]==0.54.0
+sqlalchemy==2.1.1
 pydantic==2.13.5
 pydantic-settings==2.15.0
 psycopg[binary]==3.3.6
