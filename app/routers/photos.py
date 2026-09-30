@@ -7,7 +7,8 @@ Two ways to list, chosen by the query (see app/query.py):
   at the top while someone scrolls: an offset would shift by every photo that
   arrived since the first page and show some twice, a key does not. It also
   walks ``ix_photos_timeline`` and nothing else, so page 100 costs what page 1
-  does.
+  does. A listing that starts part way down (``from=``) pages both ways:
+  ``cursor`` down to older photos, ``before`` up to newer ones.
 * **score mode**, when there are words, ``similar:`` or ``face:``: a ranking, best first,
   above the model's floor and capped (``query.SCORE_CAP``). Paged by offset,
   because a ranking is computed whole anyway and does not grow while you read
@@ -124,8 +125,10 @@ def card(db: Session, photo: Photo) -> dict:
 
 
 def _date_page(db: Session, spec: QuerySpec, clauses: list, cursor: str | None,
-               start: str | None, limit: int) -> dict:
+               before: str | None, start: str | None, limit: int) -> dict:
     key = tuple_(Photo.sort_at, Photo.id)
+    if before:
+        return _newer_page(db, spec, clauses, before, limit)
     stmt = select(Photo).where(*clauses)
     if cursor:
         at, ident = decode_cursor(cursor)
@@ -159,11 +162,44 @@ def _date_page(db: Session, spec: QuerySpec, clauses: list, cursor: str | None,
     total = None
     if not cursor:
         total = db.scalar(select(func.count()).select_from(Photo).where(*clauses))
+    # A jump lands part way down, with the newer photos still above it: `prev`
+    # is where the walk up from its first photo starts, None at the top.
+    prev = None
+    if start and rows:
+        top = tuple_(rows[0].sort_at, rows[0].id)
+        if db.scalar(select(Photo.id).where(*clauses, key > top).limit(1)) is not None:
+            prev = encode_cursor(rows[0])
     return {
         "items": cards(db, rows),
         "next": encode_cursor(rows[-1]) if more and rows else None,
+        "prev": prev,
         "mode": "date",
         "total": total,
+        "query": spec.describe(),
+        "similar_to": None,
+        "face": None,
+    }
+
+
+def _newer_page(db: Session, spec: QuerySpec, clauses: list, before: str, limit: int) -> dict:
+    """The page above ``before``: the newer photos, read upward from it and
+    handed back in the listing's own order, newest first. Only ``prev`` goes
+    on from here; the photos below are the ones the reader already has."""
+    at, ident = decode_cursor(before)
+    rows = db.execute(
+        select(Photo)
+        .where(*clauses, tuple_(Photo.sort_at, Photo.id) > tuple_(at, ident))
+        .order_by(Photo.sort_at.asc(), Photo.id.asc())
+        .limit(limit + 1)
+    ).scalars().all()
+    more = len(rows) > limit
+    rows = rows[:limit][::-1]
+    return {
+        "items": cards(db, rows),
+        "next": None,
+        "prev": encode_cursor(rows[0]) if more and rows else None,
+        "mode": "date",
+        "total": None,
         "query": spec.describe(),
         "similar_to": None,
         "face": None,
@@ -182,6 +218,7 @@ def _score_page(db: Session, spec: QuerySpec, clauses: list, cursor: str | None,
     page = {
         "items": [],
         "next": None,
+        "prev": None,
         "mode": "score",
         "total": 0 if offset == 0 else None,
         "query": spec.describe(),
@@ -218,6 +255,7 @@ def list_photos(
     db: DB,
     q: str = "",
     cursor: str | None = None,
+    before: str | None = None,
     limit: int = DEFAULT_LIMIT,
     start: Annotated[str | None, Query(alias="from")] = None,
 ) -> dict:
@@ -226,7 +264,7 @@ def list_photos(
     clauses = listed(spec)
     if spec.mode == "score":
         return _score_page(db, spec, clauses, cursor, limit)
-    return _date_page(db, spec, clauses, cursor, start, limit)
+    return _date_page(db, spec, clauses, cursor, before, start, limit)
 
 
 # --- one photo ----------------------------------------------------------------

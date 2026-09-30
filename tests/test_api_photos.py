@@ -270,6 +270,54 @@ def test_a_bad_from_is_a_bad_request(client, lib, value):
     assert client.get("/api/photos", params={"from": value}).status_code == 400
 
 
+# --- before= (scrolling up from a jump) -------------------------------------------
+
+
+def test_a_jump_says_where_the_walk_up_starts(client, lib):
+    assert photos(client, **{"from": "2024-05"})["prev"]
+    # At the top there is nothing above, however the top was reached.
+    assert photos(client)["prev"] is None
+    assert photos(client, **{"from": "2030-01"})["prev"] is None
+    assert photos(client, limit=3, cursor=photos(client, limit=3)["next"])["prev"] is None
+
+
+def test_paging_up_from_a_jump_visits_everything_above_once(client, lib):
+    page = photos(client, limit=3, **{"from": "2024-05"})
+    above, cursor, pages = [], page["prev"], 0
+    while cursor:
+        up = photos(client, limit=2, before=cursor)
+        pages += 1
+        assert len(up["items"]) <= 2
+        assert up["total"] is None and up["next"] is None
+        above = ids(up) + above
+        cursor = up["prev"]
+    # Newest first, as the listing is, and joined to the jump with no gap.
+    assert above == [lib[k] for k in ORDER[:ORDER.index("far")]]
+    assert above + ids(page) == [lib[k] for k in ORDER[:len(above) + 3]]
+    assert pages == 2
+
+
+def test_paging_up_through_a_tie_keeps_both(client, lib, db):
+    from app.routers.photos import encode_cursor
+    from core.models import Photo
+
+    up = photos(client, q="on:2024-03-10", limit=1, before=encode_cursor(db.get(Photo, lib["tie_a"])))
+    assert ids(up) == [lib["tie_b"]]
+    assert up["prev"] is None
+
+
+def test_paging_up_keeps_to_the_filters(client, lib):
+    # The only video: there is nothing of its kind above it to walk up to.
+    assert photos(client, q="is:video", **{"from": "2024-05"})["prev"] is None
+    page = photos(client, q="is:located", **{"from": "2024-05"})
+    assert names(lib, page)[0] == "far"
+    assert names(lib, photos(client, q="is:located", before=page["prev"])) == ["jul22", "near"]
+
+
+def test_a_bad_before_is_a_bad_request(client, lib):
+    assert client.get("/api/photos", params={"before": "!!!"}).status_code == 400
+
+
 # --- filters ------------------------------------------------------------------
 
 

@@ -467,7 +467,7 @@ App.viewer = (() => {
     safeBtn.hidden = !(App.state.nsfw && App.state.nsfw.enabled && (cc.nsfw_flag || cc.nsfw_safe));
     safeBtn.classList.toggle("on", Boolean(cc.nsfw_safe));
     safeBtn.title = cc.nsfw_safe ? "Marked safe: take the mark back (n)" : "Not explicit: mark as safe (n)";
-    prevBtn.disabled = i <= 0;
+    prevBtn.disabled = i <= 0 && (list || !App.grid.hasAbove());
     nextBtn.disabled = i < 0 || (i >= items().length - 1 && (list || !App.grid.hasMore()));
   }
 
@@ -784,6 +784,8 @@ App.viewer = (() => {
     if (i < 0) return;
     // The end of what is loaded, coming up: the next page, ahead of need.
     if (!list && i >= arr.length - 6 && App.grid.hasMore()) App.grid.more();
+    // And the start, after a jump: the page above.
+    if (!list && i < 6 && App.grid.hasAbove()) App.grid.above();
     [arr[i + 1], arr[i - 1]].forEach((c) => {
       if (!c || c.kind === "video") return;
       fetchDetail(c.id).then((d) => { if (d.urls && d.urls.display) new Image().src = d.urls.display; }).catch(() => {});
@@ -819,6 +821,10 @@ App.viewer = (() => {
     let i = index();
     if (dir > 0 && !list && i >= items().length - 1 && App.grid.hasMore()) {
       await App.grid.more();
+      i = index();
+    }
+    if (dir < 0 && !list && i === 0 && App.grid.hasAbove()) {
+      await App.grid.above();
       i = index();
     }
     const arr = items();

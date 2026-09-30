@@ -7,9 +7,10 @@
    height hovers around a target the reader sets with + and -.
 
    Loading is a keyset walk down the timeline, a page at a time as the bottom of
-   the grid comes near. Nothing above the first page is ever needed except after
-   a jump from the scrubber, which starts the walk at that month instead; Home
-   (or the note at the top) goes back to the newest.
+   the grid comes near. A jump from the scrubber starts the walk at that month
+   instead, and from there it goes both ways: the newer photos are fetched a
+   page at a time as the top comes near, and laid in above without moving the
+   picture on screen. Home goes back to the newest.
 
    Word, similarity and face searches come back in relevance order. There, day
    headings would chop the list into one-picture days, so the grid is one flat
@@ -30,6 +31,7 @@ App.grid = (() => {
   let view = null;          // the scroller
   let body = null;
   let head = null;
+  let topEl = null;         // above the first day while there are newer photos to fetch
   let sentinel = null;
   let endEl = null;
   let pill = null;
@@ -42,18 +44,23 @@ App.grid = (() => {
   let secOf = new Map();    // id -> section
 
   let next = null;          // the cursor for the next page, null at the end
+  let prev = null;          // the cursor for the page above, null at the top
   let mode = "date";
   let total = null;
   let query = null;
   let similarTo = null;
   let face = null;          // a face search's face: { id, url, photo_id }
-  let from = null;          // YYYY-MM after a scrubber jump; a day or "undated" after a reveal
+  // YYYY-MM after a scrubber jump, a day or "undated" after a reveal; null
+  // again once the walk up has reached the newest, when it is the plain listing.
+  let from = null;
   let dated = true;         // drawn with day headings
   let loadedQ = "";
   let loading = false;
   let error = null;
   let seq = 0;
   let pending = null;       // the page being fetched, shared by every caller
+  let pendingUp = null;     // the same for the page above
+  let upError = null;       // the page above failed; the top offers to try again
   let width = 0;
   let headH = 40;
 
@@ -181,7 +188,7 @@ App.grid = (() => {
 
   // --- sections --------------------------------------------------------------
 
-  function makeSection(key) {
+  function makeSection(key, atTop = false) {
     const sec = { key, day: dated && key !== "undated" ? key : null, items: [], height: 0 };
     sec.el = App.el("section", { class: dated ? "day" : "day flat", dataset: { key } });
     if (dated) {
@@ -198,8 +205,13 @@ App.grid = (() => {
     }
     sec.rows = App.el("div", { class: "rows" });
     sec.el.append(sec.rows);
-    body.append(sec.el);
-    sections.push(sec);
+    if (atTop) {
+      body.prepend(sec.el);
+      sections.unshift(sec);
+    } else {
+      body.append(sec.el);
+      sections.push(sec);
+    }
     return sec;
   }
 
@@ -255,6 +267,30 @@ App.grid = (() => {
       secOf.set(card.id, sec);
       dirty.add(sec);
     }
+    if (!width) width = body.clientWidth;
+    dirty.forEach(layoutSection);
+    paintDayChecks();
+  }
+
+  /* A page from above: newest first like every page, and all of it newer
+     than what is drawn. Laid in from its oldest card up, so each one meets
+     the day it belongs to at the top of the grid. The caller keeps the
+     scroll position (see above()). */
+  function prepend(cards) {
+    const fresh = cards.filter((c) => !pos.has(c.id));
+    if (!fresh.length) return;
+    const dirty = new Set();
+    for (let i = fresh.length - 1; i >= 0; i--) {
+      const card = fresh[i];
+      const key = dated ? (card.day || "undated") : "all";
+      let sec = sections[0];
+      if (!sec || sec.key !== key) sec = makeSection(key, true);
+      sec.items.unshift(card);
+      secOf.set(card.id, sec);
+      dirty.add(sec);
+    }
+    items = fresh.concat(items);
+    pos = new Map(items.map((c, i) => [c.id, i]));
     if (!width) width = body.clientWidth;
     dirty.forEach(layoutSection);
     paintDayChecks();
@@ -403,6 +439,8 @@ App.grid = (() => {
     const q = App.state.q;
     loading = true;
     pending = null;
+    pendingUp = null;
+    upError = null;
     paintEnd();
     let payload;
     try {
@@ -416,7 +454,9 @@ App.grid = (() => {
       error = err;
       clear();
       next = null;
+      prev = null;
       paintHead();
+      paintTop();
       paintEnd();
       App.bus.emit("grid", info());
       return;
@@ -425,13 +465,15 @@ App.grid = (() => {
     loading = false;
     error = null;
     loadedQ = q;
-    from = opts.from || null;
     mode = payload.mode || "date";
     total = payload.total;
     query = payload.query || null;
     similarTo = payload.similar_to || null;
     face = payload.face || null;
     next = payload.next || null;
+    prev = payload.prev || null;
+    // A jump that landed at the top anyway is the plain listing.
+    from = prev ? opts.from || null : null;
     dated = mode === "date" || App.query.get(q, "sort") === "date";
     const keepFocus = opts.keepFocus ? focusId : null;
     clear();
@@ -439,7 +481,12 @@ App.grid = (() => {
     pill.hidden = true;
     width = body.clientWidth;
     paintHead();
+    paintTop();
     append(payload.items || []);
+    // The day jumped to at the top of the screen, the spinner for the days
+    // above it just out of sight: the walk up starts at once, and scrolling
+    // up finds them there.
+    if (prev) view.scrollTop = body.offsetTop;
     if (keepFocus !== null && pos.has(keepFocus)) setFocus(keepFocus, false);
     paintEnd();
     App.bus.emit("grid", info());
@@ -477,13 +524,48 @@ App.grid = (() => {
     return pending;
   }
 
+  /* The page above, after a jump: the newer photos, laid in over the top
+     with the picture at the top of the screen kept where it is. One request
+     at a time, like more(), and independent of it. At the newest the listing
+     is the plain one again, so `from` goes. */
+  function above() {
+    if (pendingUp) return pendingUp;
+    if (!prev || loading || upError) return Promise.resolve(false);
+    const mine = seq;
+    const cursor = prev;
+    pendingUp = (async () => {
+      try {
+        const payload = await App.api.get(`/api/photos?${params({ before: cursor })}`);
+        if (mine !== seq) return false;
+        const mark = capture();
+        prev = payload.prev || null;
+        if (!prev) from = null;
+        prepend(payload.items || []);
+        paintTop();
+        restore(mark);
+        App.bus.emit("grid-more", info());
+        return true;
+      } catch (err) {
+        if (mine === seq) { upError = err; paintTop(); }
+        return false;
+      } finally {
+        if (mine === seq) {
+          pendingUp = null;
+          setTimeout(checkMore, 0);
+        }
+      }
+    })();
+    return pendingUp;
+  }
+
   /* IntersectionObserver only reports *changes*; a page too short to push the
-     sentinel out of range would never ask for the next one. */
+     sentinel out of range would never ask for the next one. The same at the
+     top, where a jump starts with the edge already in range. */
   function checkMore() {
-    if (!next || pending || loading || view.offsetParent === null || error) return;
-    const s = sentinel.getBoundingClientRect();
+    if (loading || view.offsetParent === null || error) return;
     const v = view.getBoundingClientRect();
-    if (s.top < v.bottom + 2000) more();
+    if (next && !pending && sentinel.getBoundingClientRect().top < v.bottom + 2000) more();
+    if (prev && !pendingUp && !upError && topEl.getBoundingClientRect().bottom > v.top - 2000) above();
   }
 
   function info() {
@@ -492,11 +574,20 @@ App.grid = (() => {
 
   // --- the head and the foot -------------------------------------------------
 
-  /* Where a jump started: the scrubber's month, or the day (or the undated
-     at the end) that the viewer's "Show in all photos" went to. */
-  function fromLabel(f) {
-    if (f === "undated") return "The photos with no date";
-    return `From ${f.length > 7 ? App.fmt.short(f) : App.fmt.month(f)} back`;
+  /* Above the first day after a jump, while there are newer photos still to
+     fetch: where they will appear, or the way to ask again if they could not
+     be. One height for both, so swapping them does not move the grid. */
+  function paintTop() {
+    topEl.hidden = !prev;
+    if (!prev) { topEl.replaceChildren(); return; }
+    if (upError) {
+      topEl.replaceChildren(App.el("button", {
+        class: "btn", text: "Load newer photos", title: upError.message,
+        onclick: () => { upError = null; paintTop(); above(); },
+      }));
+      return;
+    }
+    topEl.replaceChildren(App.el("span", { class: "spinner" }));
   }
 
   function paintHead() {
@@ -520,12 +611,6 @@ App.grid = (() => {
             `${App.fmt.plural(n, "photo")}${n >= 2000 ? " (the closest 2,000)" : ""}${src && src.taken ? ` · ${App.fmt.short(src.taken)}` : ""}` }),
         ),
         App.el("button", { class: "btn", text: "Back to all", onclick: () => App.shell.setQuery("", { push: true }) }),
-      ));
-    }
-    if (from) {
-      nodes.push(App.el("div", { class: "grid-banner slim" },
-        App.el("span", { class: "banner-text", text: fromLabel(from) }),
-        App.el("button", { class: "btn", text: "Back to newest", title: "Home", onclick: () => newest() }),
       ));
     }
     head.replaceChildren(...nodes);
@@ -725,8 +810,14 @@ App.grid = (() => {
     if (focusId === null || !pos.has(focusId)) { setFocus(firstVisible() ?? items[0].id); return; }
     const i = pos.get(focusId);
     let id = null;
-    if (dir === "left") id = i > 0 ? items[i - 1].id : null;
-    else if (dir === "right") {
+    if (dir === "left") {
+      id = i > 0 ? items[i - 1].id : null;
+      if (id === null && prev) {
+        const was = focusId;
+        above().then(() => { const j = pos.get(was); if (focusId === was && j > 0) setFocus(items[j - 1].id); });
+        return;
+      }
+    } else if (dir === "right") {
       id = i < items.length - 1 ? items[i + 1].id : null;
       if (id === null && next) { more().then(() => { if (pos.get(focusId) === i && items[i + 1]) setFocus(items[i + 1].id); }); return; }
     } else {
@@ -763,10 +854,11 @@ App.grid = (() => {
      sidebar). Scrolled to when it is already loaded, otherwise the listing
      restarts there: the listing is a walk down the timeline, so starting it at
      that month is the same as paging there, without fetching everything in
-     between. */
+     between. The first day loaded, with newer ones still to come above it,
+     may be only the end of the month, so that one restarts too. */
   function jump(prefix) {
     const sec = sections.find((s) => s.day && s.day.startsWith(prefix));
-    if (sec && !loading) {
+    if (sec && !loading && !(prev && sec === sections[0])) {
       view.scrollTop = sec.el.offsetTop;
       return;
     }
@@ -945,6 +1037,7 @@ App.grid = (() => {
     view = document.getElementById("grid-view");
     body = document.getElementById("grid-body");
     head = document.getElementById("grid-head");
+    topEl = document.getElementById("grid-top");
     sentinel = document.getElementById("grid-sentinel");
     endEl = document.getElementById("grid-end");
     pill = document.getElementById("new-pill");
@@ -972,6 +1065,9 @@ App.grid = (() => {
     new IntersectionObserver((entries) => {
       if (entries.some((en) => en.isIntersecting)) more();
     }, { root: view, rootMargin: "0px 0px 2000px 0px" }).observe(sentinel);
+    new IntersectionObserver((entries) => {
+      if (entries.some((en) => en.isIntersecting)) above();
+    }, { root: view, rootMargin: "2000px 0px 0px 0px" }).observe(topEl);
 
     // Width changes (the window, the drawer breakpoint, the viewer's info
     // panel never: it is an overlay) relayout every day, keeping the picture
@@ -998,12 +1094,13 @@ App.grid = (() => {
   }
 
   return {
-    init, load, more, jump, reveal, newest, setSize, key, onStatus, relayout, checkMore, fitWidth, remove,
+    init, load, more, above, jump, reveal, newest, setSize, key, onStatus, relayout, checkMore, fitWidth, remove,
     refresh: () => refreshCards(),
     items: () => items,
     card,
     indexOf: (id) => (pos.has(id) ? pos.get(id) : -1),
     hasMore: () => Boolean(next),
+    hasAbove: () => Boolean(prev),
     focused: () => (focusId === null ? null : card(focusId)),
     setFocus,
     selection: selectedCards,
