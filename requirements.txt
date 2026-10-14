@@ -11,7 +11,7 @@ sqlalchemy==2.1.1
 pydantic==2.13.5
 pydantic-settings==2.15.0
 psycopg[binary]==3.3.6
-pgvector==0.5.0             # the vector column type, both halves
+pgvector==0.5.1             # the vector column type, both halves
 tzdata==2026.4              # IANA zones on hosts that ship none (containers)
 
 # Photo-specific
