@@ -12,7 +12,7 @@ pydantic==2.13.5
 pydantic-settings==2.15.0
 psycopg[binary]==3.3.6
 pgvector==0.5.0             # the vector column type, both halves
-tzdata==2026.4              # IANA zones on hosts that ship none (containers)
+tzdata==2026.5              # IANA zones on hosts that ship none (containers)
 
 # Photo-specific
 pillow==12.3.0              # thumbnails on demand, HEIC -> JPEG for display and sharing

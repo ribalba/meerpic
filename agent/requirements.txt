@@ -10,7 +10,7 @@ pydantic==2.13.5
 pydantic-settings==2.15.0
 psycopg[binary]==3.3.6
 pgvector==0.5.0
-tzdata==2026.4
+tzdata==2026.5
 pillow==12.3.0
 pillow-heif==1.8.0
 fastembed==0.8.1            # SigLIP 2 / CLIP image embeddings over ONNX Runtime, no torch
