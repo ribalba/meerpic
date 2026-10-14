@@ -18,4 +18,4 @@ tzdata==2026.4              # IANA zones on hosts that ship none (containers)
 pillow==12.3.0              # thumbnails on demand, HEIC -> JPEG for display and sharing
 pillow-heif==1.8.0          # HEIC/HEIF decoding: every iPhone photo since 2017
 fastembed==0.8.1            # turns the words of a search into the photos' vector space (ONNX, no torch)
-numpy==2.5.3
+numpy==2.5.4
