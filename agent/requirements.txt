@@ -7,7 +7,7 @@
 # for iCloud Photos. agent/Dockerfile installs all of them.
 sqlalchemy==2.1.1
 pydantic==2.13.5
-pydantic-settings==2.15.0
+pydantic-settings==2.16.0
 psycopg[binary]==3.3.6
 pgvector==0.5.0
 tzdata==2026.4
