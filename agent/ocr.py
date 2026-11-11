@@ -42,8 +42,8 @@ from sqlalchemy import and_, delete, insert, or_, select, update
 from sqlalchemy.orm import Session
 
 from core.config import Settings
-from core.media import original_path
 from core.models import Photo, PhotoText
+from core.offloading import source_path
 from core.timeutil import utcnow
 
 from . import stages, video
@@ -239,6 +239,7 @@ def pending_query(settings: Settings):
     query = select(
         Photo.id, Photo.sig, Photo.root, Photo.rel_path, Photo.name, Photo.kind,
         Photo.duration, Photo.width, Photo.height, Photo.video_codec,
+        Photo.lowres_sig, Photo.offloaded_at,
     ).where(
         Photo.is_companion.is_(False),
         Photo.superseded_by.is_(None),
@@ -286,7 +287,8 @@ def run_batch(
 
     rows, tasks = {}, []
     for row in todo:
-        src = original_path(row.root, row.rel_path)
+        # An offloaded video's frames come from its small copy.
+        src = source_path(row)
         if src is None:
             failed(row, f"library root {row.root!r} is not configured")
             continue

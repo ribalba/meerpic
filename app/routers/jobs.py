@@ -17,10 +17,11 @@ from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy import Integer, and_, cast, func, select
 from sqlalchemy.orm import Session
 
-from core import embed
+from core import embed, roots
 from core.config import get_settings
 from core.database import get_db
 from core.models import Job, Photo, PhotoEmbedding, Setting
+from core.offloading import due, not_due
 from core.timeutil import utcnow
 
 from ..query import QuerySpec, listed
@@ -97,10 +98,13 @@ def index_json(db: Session) -> dict:
     row = db.execute(
         select(
             func.count().filter(own),
-            func.count().filter(and_(fresh, Photo.meta_sig != Photo.sig)),
+            func.count().filter(and_(fresh, Photo.meta_sig != Photo.sig, Photo.offloaded_at.is_(None))),
             func.count().filter(and_(fresh, Photo.thumb_sig != Photo.sig)),
             func.count().filter(and_(fresh, own, ~emb)),
-            func.count().filter(and_(fresh, Photo.kind == "video", Photo.preview_sig != Photo.sig)),
+            # Old enough to be offloaded: the small copy is its preview. And
+            # offloaded: nothing to make one from until it is fetched.
+            func.count().filter(and_(fresh, Photo.kind == "video", Photo.preview_sig != Photo.sig,
+                                     not_due(settings), Photo.offloaded_at.is_(None))),
             func.count().filter(and_(fresh, own, Photo.kind == "video", Photo.story_sig != Photo.sig)),
             func.count().filter(and_(fresh, own, Photo.nsfw_sig != Photo.sig)),
             func.count().filter(and_(fresh, own, Photo.kind == "photo", Photo.superseded_by.is_(None),
@@ -108,9 +112,17 @@ def index_json(db: Session) -> dict:
             func.count().filter(~fresh),
             func.count().filter(and_(fresh, own, Photo.superseded_by.is_(None), Photo.ocr_sig != Photo.sig,
                                      *(() if settings.ocr_videos else (Photo.kind == "photo",)))),
+            # Old videos: their small copy, which is their preview, still to make.
+            func.count().filter(and_(fresh, *due(settings), Photo.lowres_sig != Photo.sig,
+                                     Photo.offloaded_at.is_(None))),
+            func.count().filter(Photo.offloaded_at.is_not(None)),
         )
+        # A folder that is away (core/roots.py) has nothing pending: the
+        # agent cannot get at it, and "indexing" would show until it is back.
+        .where(*roots.reachable())
     ).one()
-    total, meta, thumbs, embeddings, previews, story, nsfw, faces, failed, ocr = (int(v) for v in row)
+    (total, meta, thumbs, embeddings, previews, story, nsfw, faces, failed, ocr,
+     lowres, offloaded) = (int(v) for v in row)
     if not settings.nsfw_enabled:
         # Turned off, nothing will ever score them.
         nsfw = 0
@@ -135,8 +147,27 @@ def index_json(db: Session) -> dict:
         "nsfw": nsfw,
         "faces": faces,
         "ocr": ocr,
+        "lowres": lowres,
+        "offloaded": offloaded,
         "failed": failed,
     }
+
+
+def offline_json(db: Session) -> list[dict]:
+    """The library folders that are not there right now, each with how many
+    photos that takes out of the grid. Usually none. See core/roots.py."""
+    away = sorted(roots.offline())
+    if not away:
+        return []
+    # What the grid would show of them if they were there (query.listed).
+    hidden = dict(db.execute(
+        select(Photo.root, func.count())
+        .where(Photo.root.in_(away), ~Photo.is_companion, Photo.superseded_by.is_(None),
+               Photo.trashed_at.is_(None), ~Photo.hidden, ~Photo.icloud_deleted)
+        .group_by(Photo.root)
+    ).all())
+    return [{"root": name, "path": str(settings.root_path(name)), "photos": int(hidden.get(name, 0))}
+            for name in away]
 
 
 @router.get("/status")
@@ -169,6 +200,7 @@ def status(db: DB) -> dict:
         "last_sync": iso_z(last_sync),
         "jobs": [job_json(j) for j in (*active, *finished)],
         "index": index_json(db),
+        "offline": offline_json(db),
         "latest": {"id": latest.id, "sort_at": iso_z(latest.sort_at)} if latest else None,
     }
 

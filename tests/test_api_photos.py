@@ -41,13 +41,14 @@ CARD_KEYS = {
     "id", "kind", "name", "taken", "day", "date_source", "w", "h", "duration", "live",
     "screenshot", "place", "city", "lat", "lon", "thumb", "path", "export", "export_name",
     "export_direct", "favorite", "nsfw", "nsfw_flag", "nsfw_safe", "edited", "preview", "story",
-    "story_frames",
+    "story_frames", "offloaded",
 }
 DETAIL_KEYS = CARD_KEYS | {
     "root", "rel_path", "size", "mime", "ext", "taken_utc", "tz_offset", "camera", "exposure",
     "exif", "location", "video_codec", "live_video_id", "urls", "preview_ready", "error",
     "albums", "added_at", "original_id", "hidden", "icloud_deleted", "deletable",
     "faces", "faces_state", "nsfw_like", "text_lines", "text_state",
+    "fetchable", "offloaded_at", "lowres_size",
 }
 
 
@@ -370,7 +371,7 @@ def test_the_query_is_described_back(client, lib):
     assert page["query"]["errors"] == [
         (
             '"is:unicorn": is: takes photo, video, live, screenshot, located, unlocated, dated, undated, '
-            "favorite, hidden, deleted, whatsapp, saved, nsfw, safe, edited"
+            "favorite, hidden, deleted, whatsapp, saved, nsfw, safe, edited, offloaded, shared"
         ),
         'unknown filter "foo:bar"',
     ]
@@ -406,6 +407,7 @@ def test_detail_of_a_photo(client, lib):
         "export": f"/media/export/{lib['jul22']}",
         "video": None,
         "live": None,
+        "lowres": None,
     }
     assert d["preview_ready"] is False
     assert d["live_video_id"] is None

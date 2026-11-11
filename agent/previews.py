@@ -9,10 +9,16 @@ starting what is next, while meta, thumbnails and embeddings carry on.
 Background work goes through videos newest first, and through every
 standalone video before the first Live Photo motion.
 
-At most two run at once, and background work (``video.previews = "all"``)
-only ever takes one of them: the other is kept for somebody who just opened
-a video in the browser and is looking at "Preparing a playable copy...". A
-``preview`` job always runs, whatever the setting, and goes first.
+The same runner makes the small copies offloaded videos keep (``lowres``,
+core/offloading.py): for a video old enough to be offloaded that small copy
+is its preview, so the 720p background work leaves it out, and makes it
+whatever ``video.previews`` says, because no original may go without one.
+720p copies of newer videos come first, small copies after.
+
+At most two run at once, and background work only ever takes one of them:
+the other is kept for somebody who just opened a video in the browser and is
+looking at "Preparing a playable copy...". A ``preview`` job always runs,
+whatever the setting, and goes first.
 
 ffmpeg's stderr goes to a file beside the output rather than a pipe: a
 broken file can make ffmpeg print for minutes, and a pipe nobody reads
@@ -33,8 +39,9 @@ from sqlalchemy import select, update
 from sqlalchemy.orm import Session
 
 from core.config import Settings
-from core.media import original_path, preview_path
+from core.media import lowres_path, original_path, preview_path
 from core.models import Photo
+from core.offloading import due, not_due, offloaded
 from core.timeutil import utcnow
 
 from . import jobs, stages, video
@@ -61,6 +68,17 @@ class Running:
     mode: str
     background: bool
     job_ids: list[int] = field(default_factory=list)
+    # "preview", the 720p copy in the cache, or "lowres", the small copy an
+    # offloaded video keeps in its library folder.
+    kind: str = "preview"
+
+    @property
+    def column(self) -> str:
+        return "lowres_sig" if self.kind == "lowres" else "preview_sig"
+
+    @property
+    def stage(self) -> str:
+        return "lowres" if self.kind == "lowres" else "previews"
 
 
 def _last_line(path: Path) -> str:
@@ -114,8 +132,20 @@ class Previews:
         return [j for r in self.running for j in r.job_ids] + [j for _, j in self.queue]
 
     def pending_query(self):
+        # Not one whose original is in iCloud only, whatever its age now
+        # (offloading turned off since, or in Recently Deleted): there is
+        # nothing here to make it from until it is fetched.
         return select(Photo.id).where(
-            Photo.kind == "video", Photo.meta_sig == Photo.sig, Photo.preview_sig != Photo.sig
+            Photo.kind == "video", Photo.meta_sig == Photo.sig, Photo.preview_sig != Photo.sig,
+            not_due(self.settings), Photo.offloaded_at.is_(None),
+        )
+
+    def lowres_query(self):
+        """Videos to be offloaded that have no small copy of this version
+        yet, and whose original is here to make one from."""
+        return select(Photo.id).where(
+            *due(self.settings), Photo.meta_sig == Photo.sig, Photo.lowres_sig != Photo.sig,
+            Photo.offloaded_at.is_(None),
         )
 
     # --- on-demand -------------------------------------------------------------
@@ -138,6 +168,10 @@ class Previews:
             return
         if row.preview_sig == row.sig and preview_path(row.sig).is_file():
             jobs.finish(job_id, "done", message="ready")
+            return
+        if offloaded(row):
+            jobs.finish(job_id, "failed", message="the original is in iCloud",
+                        error="The original is in iCloud only: get it first, then it can be made playable.")
             return
         for r in self.running:
             if r.photo_id == row.id:
@@ -172,30 +206,48 @@ class Previews:
                 continue
             self._start(db, row, [job_id], background=False)
             changed += 1
-        if self.background_enabled and background:
+        if background:
             for _ in range(STARTS_PER_TICK):
                 if (
                     sum(r.background for r in self.running) >= BACKGROUND
                     or len(self.running) >= CAPACITY
                 ):
                     break
-                row = self._next_background(db)
-                if row is None:
+                pick = self._next_any(db)
+                if pick is None:
                     break
-                self._start(db, row, [], background=True)
+                self._start(db, pick[0], [], background=True, kind=pick[1])
                 changed += 1
         return changed
 
     def has_background_work(self, db: Session) -> bool:
-        return self.background_enabled and self._next_background(db) is not None
+        return self._next_any(db) is not None
+
+    def _next_any(self, db: Session) -> tuple[Photo, str] | None:
+        """The next background conversion, and which kind it is."""
+        if self.background_enabled:
+            row = self._next_background(db)
+            if row is not None:
+                return row, "preview"
+        if self.settings.offload_enabled:
+            row = self._next_lowres(db)
+            if row is not None:
+                return row, "lowres"
+        return None
+
+    def _skip(self) -> list[int]:
+        return [r.photo_id for r in self.running] + self.cooldown.ids()
 
     def _next_background(self, db: Session) -> Photo | None:
         query = self.pending_query()
-        skip = [r.photo_id for r in self.running] + self.cooldown.ids()
         # Videos somebody will open first, newest first; the motion of Live
         # Photos (thousands of two-second clips, played on hover) after.
-        found = db.execute(stages.newest(query, self.only_ids, 1, skip,
+        found = db.execute(stages.newest(query, self.only_ids, 1, self._skip(),
                                          first=Photo.is_companion.is_(False))).scalar()
+        return db.get(Photo, found) if found is not None else None
+
+    def _next_lowres(self, db: Session) -> Photo | None:
+        found = db.execute(stages.newest(self.lowres_query(), self.only_ids, 1, self._skip())).scalar()
         return db.get(Photo, found) if found is not None else None
 
     def _note(self, text: str) -> None:
@@ -203,19 +255,28 @@ class Previews:
             self._notes.add(text)
             log(f"previews: {text}")
 
-    def _start(self, db: Session, row: Photo, job_ids: list[int], *, background: bool) -> None:
+    def _start(self, db: Session, row: Photo, job_ids: list[int], *, background: bool,
+               kind: str = "preview") -> None:
         src = original_path(row.root, row.rel_path)
-        dest = preview_path(row.sig)
+        small = kind == "lowres"
+        dest = lowres_path(row.root, row.name, row.sig) if small else preview_path(row.sig)
         try:
-            if src is None:
+            if src is None or dest is None:
                 raise video.VideoError(f"library root {row.root!r} is not configured")
             # Known from the metadata already: no need to ask ffprobe to
             # learn that this ffmpeg cannot do anything with it.
             if row.video_codec == "hevc" and not self.caps.hevc:
                 raise video.VideoError(video.HEVC_MISSING)
             info = video.stream_info(video.probe(str(src), self.settings.ffprobe))
-            p = video.plan(info, self.caps, height=self.settings.video_height,
-                           crf=self.settings.video_crf, preset=self.settings.video_preset)
+            if small:
+                # Small is the point: always re-encoded, and 30 frames a
+                # second with 64 kbit/s of sound are plenty for looking back.
+                p = video.plan(info, self.caps, height=self.settings.offload_height,
+                               crf=self.settings.offload_crf, preset=self.settings.video_preset,
+                               fps=30, audio="64k", remux=False)
+            else:
+                p = video.plan(info, self.caps, height=self.settings.video_height,
+                               crf=self.settings.video_crf, preset=self.settings.video_preset)
             self._note(p.note)
             dest.parent.mkdir(parents=True, exist_ok=True)
             tmp = dest.with_name(f".{dest.name}.{os.getpid()}.tmp")
@@ -225,12 +286,12 @@ class Previews:
                 proc = subprocess.Popen(cmd, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
                                         stderr=err, start_new_session=True)
         except (video.VideoError, OSError) as exc:
-            self._failed(db, row.id, row.sig, row.name, job_ids, exc)
+            self._failed(db, row.id, row.sig, row.name, job_ids, exc, "lowres" if small else "previews")
             return
         self.running.append(Running(
             photo_id=row.id, sig=row.sig, name=row.name, proc=proc, tmp=tmp, errlog=errlog,
             dest=dest, deadline=time.monotonic() + video.timeout_for(info, p.mode),
-            mode=p.mode, background=background, job_ids=list(job_ids),
+            mode=p.mode, background=background, job_ids=list(job_ids), kind=kind,
         ))
         for job_id in job_ids:
             jobs.update_job(job_id, message=f"preparing {row.name}", progress={"mode": p.mode})
@@ -246,23 +307,23 @@ class Previews:
             if code is None:
                 self._kill(r)
                 self._failed(db, r.photo_id, r.sig, r.name, r.job_ids,
-                             f"ffmpeg timed out ({r.mode})")
+                             f"ffmpeg timed out ({r.mode})", r.stage)
                 continue
             if code == 0 and r.tmp.is_file() and r.tmp.stat().st_size > 0:
                 os.replace(r.tmp, r.dest)
                 _unlink(r.errlog)
                 db.execute(update(Photo).where(Photo.id == r.photo_id, Photo.sig == r.sig)
-                           .values(preview_sig=r.sig, updated_at=utcnow()))
-                stages.cleared(db, [r.photo_id], "previews")
+                           .values({r.column: r.sig, "updated_at": utcnow()}))
+                stages.cleared(db, [r.photo_id], r.stage)
                 db.commit()
                 self.done += 1
-                log(f"preview: {r.name} ({r.mode})")
+                log(f"{'small copy' if r.kind == 'lowres' else 'preview'}: {r.name} ({r.mode})")
                 for job_id in r.job_ids:
                     jobs.finish(job_id, "done", message="ready")
                 continue
             reason = _last_line(r.errlog) or f"ffmpeg exited {code}"
             _unlink(r.tmp, r.errlog)
-            self._failed(db, r.photo_id, r.sig, r.name, r.job_ids, f"ffmpeg: {reason}")
+            self._failed(db, r.photo_id, r.sig, r.name, r.job_ids, f"ffmpeg: {reason}", r.stage)
         return changed
 
     def _check_cancels(self, db: Session) -> int:
@@ -286,9 +347,9 @@ class Previews:
         return changed
 
     def _failed(self, db: Session, photo_id: int, sig: str, name: str, job_ids: list[int],
-                error: BaseException | str) -> None:
+                error: BaseException | str, stage: str = "previews") -> None:
         message = stages.short(error)
-        stages.failed(db, photo_id, sig, "previews", message)
+        stages.failed(db, photo_id, sig, stage, message)
         db.commit()
         self.cooldown.add(photo_id)
         self.failed_count += 1

@@ -28,6 +28,7 @@ from ..query import (
     never_listed,
     nsfw_clause,
     saved_clause,
+    shared_clause,
 )
 from ..security import require_auth
 from ..serialize import TZ, deletable
@@ -65,6 +66,7 @@ def counts(db: Session) -> dict:
             n(Photo.favorite.is_(True)),
             n(album_clause(WHATSAPP_ALBUM)),
             n(saved_clause()),
+            n(shared_clause()),
             n(nsfw_clause()),
             func.count().filter(and_(Photo.hidden.is_(True), ~Photo.icloud_deleted)),
             func.count().filter(and_(Photo.icloud_deleted.is_(True), ~Photo.hidden)),
@@ -72,7 +74,7 @@ def counts(db: Session) -> dict:
     ).one()
     keys = (
         "all", "photos", "videos", "live", "screenshots", "located", "undated",
-        "favorites", "whatsapp", "saved", "nsfw", "hidden", "deleted",
+        "favorites", "whatsapp", "saved", "shared", "nsfw", "hidden", "deleted",
     )
     return dict(zip(keys, (int(v) for v in row), strict=True))
 

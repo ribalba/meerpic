@@ -187,6 +187,21 @@ class Photo(Base):
     faces_sig: Mapped[str] = mapped_column(String(16), default="", nullable=False)
     # The text read in it, if any, is in ``photo_texts`` (agent/ocr.py).
     ocr_sig: Mapped[str] = mapped_column(String(16), default="", nullable=False)
+
+    # --- offloaded videos ---
+    # Videos past ``offload.after`` keep a small copy in the library folder
+    # (core.media.lowres_path), made for the version of the file this names.
+    lowres_sig: Mapped[str] = mapped_column(String(16), default="", nullable=False)
+    # Set when the original was deleted here because iCloud holds it: the row
+    # stays, with every column and derived file of that original (the sig is
+    # still its sig), and the scan does not take the missing file for a
+    # deleted one. Cleared when the original is downloaded again. A row can
+    # have it set with the file back on disk for a moment (agent/offload.py
+    # writes it before deleting); the file on disk is the truth.
+    offloaded_at: Mapped[datetime | None] = mapped_column(DateTime)
+    # When an offloaded original was last downloaded again: it stays for
+    # ``offload.keep_fetched`` days from then before it goes again.
+    fetched_at: Mapped[datetime | None] = mapped_column(DateTime)
     # A stage that fails is retried, but not forever: three failures on one
     # version of a file park it until the file changes. The message is kept
     # because "why is this one grey" deserves an answer in the UI.
@@ -360,7 +375,7 @@ class DeletedFile(Base):
 
 # Job kinds and states. Kept as strings, checked here, because the UI prints
 # them and a Postgres enum is a migration every time one is added.
-JOB_KINDS = ("sync", "scan", "preview", "reindex", "albums", "delete")
+JOB_KINDS = ("sync", "scan", "preview", "reindex", "albums", "delete", "offload", "fetch")
 JOB_STATES = ("queued", "running", "done", "failed", "cancelled")
 
 

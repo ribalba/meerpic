@@ -126,6 +126,30 @@ def trash_path(root: str) -> Path | None:
     return base / TRASH_DIR if base is not None else None
 
 
+# Where an offloaded video keeps its small copy, also inside its library
+# folder and for the same reason: once the original is gone it is the only
+# copy here, and a cache is something a person may empty. The scanner skips
+# it (dot-name) and `rclone copy` leaves it alone. Named after the file and
+# its sig, so a person can find a video in it and two versions never meet.
+OFFLOAD_DIR = ".meerpic-offloaded"
+
+
+def offload_path(root: str) -> Path | None:
+    base = get_settings().root_path(root)
+    return base / OFFLOAD_DIR if base is not None else None
+
+
+def lowres_name(name: str, sig: str) -> str:
+    stem = name.rsplit(".", 1)[0] if "." in name else name
+    return f"{stem}.{sig}.mp4"
+
+
+def lowres_path(root: str, name: str, sig: str) -> Path | None:
+    """An offloaded (or soon offloaded) video's small copy."""
+    folder = offload_path(root)
+    return folder / lowres_name(name, sig) if folder is not None else None
+
+
 def original_path(root: str, rel_path: str) -> Path | None:
     """Where a photo's file is, on this machine, or None for an unknown root."""
     base = get_settings().root_path(root)

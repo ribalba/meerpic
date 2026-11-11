@@ -6,6 +6,8 @@
     python -m agent.main --test             # check every dependency, change nothing
     python -m agent.main --sync             # one rclone sync in the foreground
     python -m agent.main --albums           # read favourites and albums from iCloud
+    python -m agent.main --offload          # offload old videos now (see agent/offload.py)
+    python -m agent.main --offload --dry-run  # ... say what would go, delete nothing
     python -m agent.main --reindex thumbs   # make a stage pending again, exit
                                             # (with --once: and run it now)
 
@@ -15,10 +17,11 @@ right after one finishes); run one small batch of each pipeline stage. A heartbe
 thread tells the UI the agent is alive whatever the loop is busy with.
 
 Everything that talks to iCloud (a sync, the album refresh that follows it,
-a delete) runs on one thread of its own, one job at a time: a first download
-of 100 GB does not hold up the thumbnails of what has already arrived, and a
-delete never runs while a sync or a listing is looking at the same files. A
-job of those kinds that arrives meanwhile waits in the queue.
+a delete, offloading old videos and fetching one back) runs on one thread of
+its own, one job at a time: a first download of 100 GB does not hold up the
+thumbnails of what has already arrived, and a delete never runs while a sync
+or a listing is looking at the same files. A job of those kinds that arrives
+meanwhile waits in the queue.
 
 Nothing that goes wrong with one file, one job or one turn ends the loop: it
 is logged, recorded where the UI can show it, and the loop goes on. The only
@@ -41,7 +44,7 @@ from core.database import SessionLocal, init_db
 from core.models import Photo
 from core.version import VERSION
 
-from . import albums, checks, delete, jobs, scan, sync
+from . import albums, checks, delete, jobs, offload, scan, sync
 from .log import log, setup
 from .pipeline import Pipeline, pending
 from .status import Heartbeat
@@ -53,10 +56,15 @@ SYNC_TIMER_EVERY = 60.0
 # Jobs claimed per turn at most; the rest wait a turn.
 JOBS_PER_TURN = 10
 # The jobs that talk to iCloud, run one at a time on the remote thread.
-REMOTE_KINDS = ("sync", "albums", "delete")
+REMOTE_KINDS = ("sync", "albums", "delete", "offload", "fetch")
 # How often the trash is looked at for day folders past their thirty days.
 PURGE_EVERY = 24 * 3600.0
-_PHASES = {"sync": "syncing", "albums": "albums", "delete": "deleting"}
+# How often old videos whose small copy is ready are offloaded, besides
+# right after every sync. Each time is a listing of all of iCloud, which
+# iCloud rate-limits, so not every hour.
+OFFLOAD_EVERY = 6 * 3600.0
+_PHASES = {"sync": "syncing", "albums": "albums", "delete": "deleting", "offload": "offloading",
+           "fetch": "fetching"}
 
 
 class Agent:
@@ -73,6 +81,7 @@ class Agent:
         self._last_scan = float("-inf")
         self._last_timer = float("-inf")
         self._last_purge = float("-inf")
+        self._last_offload = float("-inf")
         self._scan_requested = True     # the first turn scans
 
     # --- what the heartbeat reports -------------------------------------------
@@ -155,6 +164,10 @@ class Agent:
             run = sync.SyncRun(job.id, self.settings)
         elif kind == "albums":
             run = albums.AlbumsRun(job.id, self.settings)
+        elif kind == "offload":
+            run = offload.OffloadRun(job.id, self.settings, job.params)
+        elif kind == "fetch":
+            run = offload.FetchRun(job.id, self.settings, job.params)
         else:
             run = delete.DeleteRun(job.id, self.settings, job.params)
 
@@ -188,6 +201,25 @@ class Agent:
         run = albums.AlbumsRun(job.id, self.settings)
         self.remote_run = run
         self.remote_kind = "albums"
+        if run.run() == "done":
+            self.offload_after_refresh(run)
+
+    def offload_after_refresh(self, refresh: albums.AlbumsRun) -> None:
+        """Old videos whose small copy is ready, offloaded against the
+        listing the refresh just made: no second listing of iCloud."""
+        listed = {root: refresh.listings.get(root, {}).get(albums.album_name(remote))
+                  for root, remote in self.settings.sync_sources.items()}
+        listed = {root: entries for root, entries in listed.items() if entries is not None}
+        with SessionLocal() as db:
+            if not listed or not offload.has_work(db, self.settings):
+                return
+        job = jobs.claim(["offload"])
+        if job is None or job.status != "running":
+            job = jobs.create("offload", {"reason": "sync"}, running=True)
+        run = offload.OffloadRun(job.id, self.settings, job.params, listed=listed)
+        self.remote_run = run
+        self.remote_kind = "offload"
+        self._last_offload = time.monotonic()
         run.run()
 
     # --- scanning ---------------------------------------------------------------
@@ -231,6 +263,11 @@ class Agent:
                 removed = delete.purge_trash(self.settings)
                 if removed:
                     log(f"trash: emptied {removed} day folder(s) older than {delete.KEEP_DAYS} days")
+            if self.settings.offload_enabled and now - self._last_offload >= OFFLOAD_EVERY:
+                self._last_offload = now
+                if jobs.active("offload") is None and offload.has_work(db, self.settings):
+                    job = jobs.create("offload", {"reason": "timer"})
+                    log(f"offload: small copies ready, queued job {job.id}")
 
             def between() -> None:
                 # A preview job claimed mid-turn starts now, not at the end.
@@ -332,8 +369,9 @@ def run_sync(settings) -> int:
     if current is not None and current.status == "running":
         log(f"a sync is already running (job {current.id}); cancel it in the UI first", error=True)
         return 1
-    if jobs.running_elsewhere(("albums", "delete")):
-        log("an album refresh or a delete is running; try again when it is done", error=True)
+    if jobs.running_elsewhere(("albums", "delete", "offload", "fetch")):
+        log("an album refresh, delete, offload or fetch is running; try again when it is done",
+            error=True)
         return 1
     job = jobs.claim(["sync"]) if current is not None else None
     if job is None or job.status != "running":
@@ -353,14 +391,32 @@ def run_albums(settings) -> int:
     if not settings.sync_enabled:
         log("sync is disabled (sync.enabled = false)", error=True)
         return 2
-    if jobs.running_elsewhere(("sync", "albums", "delete")):
-        log("a sync, refresh or delete is running; try again when it is done", error=True)
+    if jobs.running_elsewhere(("sync", "albums", "delete", "offload", "fetch")):
+        log("a sync, refresh, delete, offload or fetch is running; try again when it is done",
+            error=True)
         return 1
     job = jobs.claim(["albums"])
     if job is None or job.status != "running":
         job = jobs.create("albums", {"reason": "cli"}, running=True)
     run = albums.AlbumsRun(job.id, settings, echo=lambda line: log(f"albums: {line}"))
     _foreground(run, "the listing")
+    return 0 if run.status == "done" else 1
+
+
+def run_offload(settings, dry_run: bool) -> int:
+    """``--offload``: one offload in the foreground; ``--dry-run`` deletes
+    nothing and also reports the videos whose small copy is not made yet."""
+    if not settings.offload_enabled:
+        log("offloading is off ([offload] after = 0, or sync is off); "
+            "OFFLOAD_AFTER=<days> in the environment tries it without changing meerpic.toml",
+            error=True)
+        return 2
+    if jobs.running_elsewhere(REMOTE_KINDS):
+        log("a sync, refresh, delete, offload or fetch is running; try again when it is done", error=True)
+        return 1
+    job = jobs.create("offload", {"reason": "cli", "dry_run": dry_run}, running=True)
+    run = offload.OffloadRun(job.id, settings, job.params, echo=lambda line: log(f"offload: {line}"))
+    _foreground(run, "the offload")
     return 0 if run.status == "done" else 1
 
 
@@ -413,6 +469,10 @@ def main(argv: list[str] | None = None) -> int:
                         help="read favourites, hidden photos and albums from iCloud")
     parser.add_argument("--relink", action="store_true",
                         help="re-pair Live Photos and edits across the whole library, then exit")
+    parser.add_argument("--offload", action="store_true",
+                        help="delete the originals of old videos whose small copy is ready, if iCloud has them")
+    parser.add_argument("--dry-run", action="store_true",
+                        help="with --offload: say what would be deleted, delete nothing")
     parser.add_argument("--reindex", metavar="STAGE", choices=(*jobs.STAGES, "all"),
                         help="make a stage pending again: " + ", ".join((*jobs.STAGES, "all")))
     parser.add_argument("--limit", type=int, metavar="N", help="with --once: only the newest N files")
@@ -426,6 +486,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--limit only makes sense with --once")
     if args.limit is not None and args.limit < 1:
         parser.error("--limit must be at least 1")
+    if args.dry_run and not args.offload:
+        parser.error("--dry-run only makes sense with --offload")
 
     setup()
     settings = get_settings()
@@ -445,6 +507,8 @@ def main(argv: list[str] | None = None) -> int:
         return run_sync(settings)
     if args.albums:
         return run_albums(settings)
+    if args.offload:
+        return run_offload(settings, args.dry_run)
     if args.once:
         return run_once(settings, args.limit)
     return Agent(settings).run_forever()

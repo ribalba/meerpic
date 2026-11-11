@@ -16,7 +16,8 @@ a mirror would let one mistaken deletion on the phone reach it.
 The other way round, a photo deleted here stays in iCloud (rclone cannot
 delete there; see agent/delete.py), and every copy excludes it by name
 (``--exclude-from``, a file of rules written for this one run from the
-``deleted_files`` table).
+``deleted_files`` table). So does an offloaded video, whose original is
+meant to be in iCloud only (agent/offload.py).
 
 The parser (``Tracker``) is separate from the process handling (``SyncRun``)
 so it can be tested line by line on recorded output.
@@ -28,6 +29,7 @@ import json
 import os
 import queue
 import re
+import shutil
 import signal
 import subprocess
 import tempfile
@@ -41,7 +43,7 @@ from sqlalchemy import select
 from core.config import Settings
 from core.database import SessionLocal
 from core.media import classify
-from core.models import DeletedFile
+from core.models import DeletedFile, Photo
 from core.timeutil import utcnow
 
 from . import jobs
@@ -59,20 +61,44 @@ _ERROR_LEVELS = {"error", "critical", "fatal", "emergency", "alert"}
 PROGRESS_EVERY = 1.0      # seconds between progress writes
 CANCEL_EVERY = 1.0
 TERM_GRACE = 10.0
+# rclone's exit status for "stopped at --max-transfer".
+MAX_TRANSFER_EXIT = 8
 
 
 # What an rclone glob gives a meaning to; a backslash takes it away.
 _GLOB = re.compile(r"([\\*?\[\]{}])")
 
 
-def build_argv(settings: Settings, exclude_from: str | None = None) -> list[str]:
+def build_argv(settings: Settings, exclude_from: str | None = None, *,
+               root: str | None = None, max_transfer: int | None = None) -> list[str]:
+    """The ``rclone copy`` of one remote into its root (``sync.root`` unless
+    another of ``settings.sync_sources`` is named)."""
+    root = root or settings.sync_root
     return [
-        settings.rclone, "copy", settings.sync_remote,
-        str(settings.root_path(settings.sync_root)),
+        settings.rclone, "copy", settings.sync_sources[root], str(settings.root_path(root)),
         "--use-json-log", "--stats", "2s", "--stats-log-level", "NOTICE", "-v",
         *(["--exclude-from", exclude_from] if exclude_from else []),
+        # In bytes: a bare number is KiB to rclone. Cautious: no file starts
+        # that would go past the limit (soft lets four 4K videos overshoot it).
+        *(["--max-transfer", f"{max_transfer}B", "--cutoff-mode", "cautious"] if max_transfer else []),
         *settings.sync_args,
     ]
+
+
+def room(settings: Settings, root: str) -> int | None:
+    """Bytes a copy into this root may bring before the disk is down to
+    ``sync.keep_free``: None for no limit, 0 or less for none at all."""
+    if settings.sync_keep_free <= 0 or any(a.startswith("--max-transfer") for a in settings.sync_args):
+        return None
+    path = settings.root_path(root)
+    # The root is made by its first copy; until then its disk is a parent's.
+    while path is not None and not path.exists() and path.parent != path:
+        path = path.parent
+    try:
+        free = shutil.disk_usage(path).free
+    except (OSError, TypeError):
+        return None
+    return free - int(settings.sync_keep_free * 1e9)
 
 
 def exclude_rule(name: str) -> str | None:
@@ -84,13 +110,27 @@ def exclude_rule(name: str) -> str | None:
     return "/" + _GLOB.sub(r"\\\1", name)
 
 
-def excluded_names(settings: Settings) -> list[str]:
-    """The names of the photos deleted here, which every sync leaves in iCloud."""
+def excluded_names(settings: Settings, root: str | None = None) -> list[str]:
+    """The names of the photos deleted here, which every sync leaves in
+    iCloud. One root's (``sync.root``'s unless named): names repeat across
+    remotes."""
     with SessionLocal() as db:
         return list(db.scalars(
             select(DeletedFile.name).distinct()
-            .where(DeletedFile.root == settings.sync_root, DeletedFile.name.is_not(None))
+            .where(DeletedFile.root == (root or settings.sync_root), DeletedFile.name.is_not(None))
             .order_by(DeletedFile.name)
+        ))
+
+
+def offloaded_names(settings: Settings, root: str | None = None) -> list[str]:
+    """The names of the videos offloaded here, whose originals every sync
+    leaves in iCloud until somebody asks for one. One root's, as above."""
+    with SessionLocal() as db:
+        return list(db.scalars(
+            select(Photo.name)
+            .where(Photo.root == (root or settings.sync_root), Photo.offloaded_at.is_not(None),
+                   ~Photo.rel_path.contains("/"))
+            .order_by(Photo.name)
         ))
 
 
@@ -111,9 +151,9 @@ def looks_like_auth(text: str) -> bool:
     return bool(_AUTH.search(text or ""))
 
 
-def auth_hint(settings: Settings) -> str:
-    remote = settings.sync_remote.split(":", 1)[0] or "iclouddrive"
-    return f"The iCloud session has expired. In a terminal run: rclone config reconnect {remote}:"
+def auth_hint(settings: Settings, remote: str | None = None) -> str:
+    name = (remote or settings.sync_remote).split(":", 1)[0] or "iclouddrive"
+    return f"The iCloud session has expired. In a terminal run: rclone config reconnect {name}:"
 
 
 def empty_progress() -> dict:
@@ -230,6 +270,14 @@ def done_message(copied: int) -> str:
     return f"{copied} new photo" + ("" if copied == 1 else "s")
 
 
+def paused_message(copied: int, keep_free: float) -> str:
+    """A sync that stopped to leave ``sync.keep_free`` on the disk."""
+    why = f"the disk is down to {keep_free:g} GB free (sync.keep_free)"
+    if copied == 0:
+        return f"Paused before copying anything: {why}"
+    return f"{done_message(copied)}, then paused: {why}"
+
+
 def _human_bytes(n: float) -> str:
     for unit in ("B", "KB", "MB", "GB", "TB"):
         if abs(n) < 1024 or unit == "TB":
@@ -252,7 +300,8 @@ def describe(p: dict) -> str:
 
 
 class SyncRun:
-    """One rclone process for one job, reported into the job's row."""
+    """One sync job: an rclone process per remote (``sync.remote``, then each
+    of ``sync.remotes``), one after the other, reported into the job's row."""
 
     def __init__(self, job_id: int, settings: Settings, *,
                  echo: Callable[[str], None] | None = None):
@@ -263,6 +312,11 @@ class SyncRun:
         self._stop = threading.Event()
         self._db_failing = False
         self.status = "running"
+        self.error = ""
+        # The remotes copied before this one: their files count in "N new".
+        self._copied_before = 0
+        # Which remote of how many, when there is more than one.
+        self._step: dict = {}
 
     def stop(self) -> None:
         """Ask a running sync to end (the agent is shutting down)."""
@@ -283,15 +337,20 @@ class SyncRun:
             except OSError:
                 pass
 
+    def _progress(self) -> dict:
+        p = dict(self.tracker.progress)
+        p["copied"] = self._copied_before + self.tracker.copied
+        return p | self._step
+
     def _flush(self) -> None:
-        p = self.tracker.progress
+        p = self._progress()
         if self.echo:
             self.echo(describe(p))
         lines = self.tracker.take_lines()
         try:
             if lines:
                 jobs.append_log(self.job_id, lines)
-            jobs.update_job(self.job_id, progress=dict(p), message=describe(p))
+            jobs.update_job(self.job_id, progress=p, message=describe(p))
         except Exception as exc:  # noqa: BLE001 - a database blip must not end a 100 GB download
             self.tracker.lines[:0] = lines          # keep them for the next write
             if not self._db_failing:
@@ -308,10 +367,71 @@ class SyncRun:
 
     def run(self) -> str:
         """Run to the end; returns the job's final status."""
-        names = excluded_names(self.settings)
-        exclude_from = write_excludes(names)
+        roots = list(self.settings.sync_sources)
+        media = 0
+        full = False
+        for step, root in enumerate(roots, 1):
+            self._copied_before += self.tracker.copied
+            self.tracker = Tracker()
+            if len(roots) > 1:
+                self._step = {"source": root, "step": step, "steps": len(roots)}
+                line = f"copying {self.settings.sync_sources[root]} into {root} ({step}/{len(roots)})"
+                jobs.append_log(self.job_id, [line])
+            # A root whose disk is full waits for the next sync. The next root
+            # may be on another disk; on this one it finds no room either.
+            budget = room(self.settings, root)
+            if budget is not None and budget <= 0:
+                full = True
+                jobs.append_log(self.job_id, [f"no room left for {root} on its disk"])
+                continue
+            result = self._copy(root, budget)
+            media += self.tracker.copied_media
+            if result == "full":
+                full = True
+                continue
+            if result != "done":
+                return self._failed(result, root, len(roots))
+        progress = self._progress()
+        self.status = "done"
+        if full:
+            # rclone counts stopping at --max-transfer as errors; it is not one.
+            progress["errors"] = 0
+            message = paused_message(media, self.settings.sync_keep_free)
+            jobs.append_log(self.job_id, [message])
+        else:
+            message = done_message(media)
+        jobs.finish(self.job_id, "done", message=message, progress=progress)
+        log(f"sync: {message}")
+        return self.status
+
+    def _failed(self, result: str, root: str, remotes: int) -> str:
+        progress = self._progress()
+        if result == "cancelled":
+            self.status = "cancelled"
+            jobs.finish(self.job_id, "cancelled", message="cancelled", progress=progress)
+            return self.status
+        self.status = "failed"
+        if result == "stopped":
+            jobs.finish(self.job_id, "failed", message="agent stopped", error="agent stopped",
+                        progress=progress)
+            return self.status
+        error = self.error
+        if remotes > 1 and result == "failed" and not self.tracker.auth:
+            error = f"{self.settings.sync_sources[root]}: {error}"
+        jobs.finish(self.job_id, "failed", message="sync failed", error=error, progress=progress)
+        log(f"sync: failed: {error}", error=True)
+        return self.status
+
+    def _copy(self, root: str, budget: int | None) -> str:
+        """One ``rclone copy`` into ``root``, leaving out what was deleted or
+        offloaded there: "done", "full" (stopped at ``sync.keep_free``),
+        "cancelled", "stopped", "unstarted" or "failed" (see ``error``)."""
+        deleted = excluded_names(self.settings, root)
+        offloaded = offloaded_names(self.settings, root)
+        exclude_from = write_excludes(sorted(set(deleted) | set(offloaded)))
         try:
-            return self._run(build_argv(self.settings, exclude_from), len(names))
+            argv = build_argv(self.settings, exclude_from, root=root, max_transfer=budget)
+            return self._run(argv, len(deleted), len(offloaded), limited=budget is not None)
         finally:
             if exclude_from:
                 try:
@@ -319,22 +439,25 @@ class SyncRun:
                 except OSError:
                     pass
 
-    def _run(self, argv: list[str], excluded: int) -> str:
-        log(f"sync: {' '.join(argv[:4])}" + (f", leaving out {excluded} deleted here" if excluded else ""))
+    def _run(self, argv: list[str], excluded: int, offloaded: int = 0, *, limited: bool = False) -> str:
+        left_out = []
         if excluded:
-            jobs.append_log(self.job_id, [f"leaving out {excluded} file(s) deleted here"])
-        jobs.update_job(self.job_id, message="starting rclone", progress=empty_progress())
+            left_out.append(f"{excluded} file(s) deleted here")
+        if offloaded:
+            left_out.append(f"{offloaded} video(s) offloaded")
+        what = " and ".join(left_out)
+        log(f"sync: {' '.join(argv[:4])}" + (f", leaving out {what}" if what else ""))
+        if what:
+            jobs.append_log(self.job_id, [f"leaving out {what}"])
+        jobs.update_job(self.job_id, message="starting rclone", progress=self._progress())
         try:
             proc = subprocess.Popen(
                 argv, stdin=subprocess.DEVNULL, stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT, start_new_session=True,
             )
         except OSError as exc:
-            error = f"rclone could not be started ({self.settings.rclone}): {exc.strerror or exc}"
-            jobs.finish(self.job_id, "failed", message="sync failed", error=error)
-            log(f"sync: {error}", error=True)
-            self.status = "failed"
-            return self.status
+            self.error = f"rclone could not be started ({self.settings.rclone}): {exc.strerror or exc}"
+            return "unstarted"
 
         lines: queue.Queue = queue.Queue()
 
@@ -378,28 +501,19 @@ class SyncRun:
         code = proc.wait()
         self._flush()
 
-        progress = dict(self.tracker.progress)
         if cancelled:
-            self.status = "cancelled"
-            jobs.finish(self.job_id, "cancelled", message="cancelled", progress=progress)
-        elif stopped:
-            self.status = "failed"
-            jobs.finish(self.job_id, "failed", message="agent stopped", error="agent stopped",
-                        progress=progress)
-        elif code == 0:
-            self.status = "done"
-            message = done_message(self.tracker.copied_media)
-            jobs.finish(self.job_id, "done", message=message, progress=progress)
-            log(f"sync: {message}")
+            return "cancelled"
+        if stopped:
+            return "stopped"
+        if code == 0:
+            return "done"
+        if code == MAX_TRANSFER_EXIT and limited:
+            return "full"
+        if self.tracker.auth:
+            self.error = auth_hint(self.settings, argv[2])
         else:
-            self.status = "failed"
-            if self.tracker.auth:
-                error = auth_hint(self.settings)
-            else:
-                error = self.tracker.last_error or f"rclone exited with status {code}"
-            jobs.finish(self.job_id, "failed", message="sync failed", error=error, progress=progress)
-            log(f"sync: failed: {error}", error=True)
-        return self.status
+            self.error = self.tracker.last_error or f"rclone exited with status {code}"
+        return "failed"
 
 
 def due(settings: Settings) -> bool:

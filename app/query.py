@@ -42,10 +42,10 @@ from datetime import date, datetime, time, timedelta
 from functools import lru_cache
 from typing import Any
 
-from sqlalchemy import and_, case, func, or_, select
+from sqlalchemy import and_, case, false, func, or_, select
 from sqlalchemy.orm import Session, aliased
 
-from core import embed
+from core import embed, roots
 from core.config import get_settings
 from core.database import SessionLocal
 from core.models import Album, Face, Photo, PhotoAlbum, PhotoEmbedding, PhotoText
@@ -54,6 +54,7 @@ from core.models import Album, Face, Photo, PhotoAlbum, PhotoEmbedding, PhotoTex
 IS_FLAGS = (
     "photo", "video", "live", "screenshot", "located", "unlocated", "dated", "undated",
     "favorite", "hidden", "deleted", "whatsapp", "saved", "nsfw", "safe", "edited",
+    "offloaded", "shared",
 )
 # Other spellings of a flag, written back in the canonical one. The heart is
 # a "favourite" to half the people who will type it.
@@ -486,6 +487,13 @@ def saved_clause():
     return and_(Photo.kind == "photo", Photo.make == "", ~Photo.is_screenshot)
 
 
+def shared_clause():
+    """In iCloud's Shared Library: from a root its zone is copied into
+    (core.config ``shared_roots``). Read at query time, like nsfw_clause."""
+    roots = get_settings().shared_roots
+    return Photo.root.in_(roots) if roots else false()
+
+
 def safe_ids(db: Session | None = None) -> list[int]:
     """The photos marked safe, a handful (ix_photos_nsfw_safe). Looked up in
     ``db`` when given, which sees that transaction's own marks, else in a
@@ -596,6 +604,9 @@ _FLAG_CLAUSES = {
     # Marked safe by hand (the marks, not the lookalikes they clear).
     "safe": lambda: Photo.nsfw_safe.is_(True),
     "edited": edited_clause,
+    # Videos whose original is in iCloud only (core/offloading.py).
+    "offloaded": lambda: Photo.offloaded_at.is_not(None),
+    "shared": shared_clause,
 }
 
 
@@ -674,9 +685,11 @@ def never_listed() -> list:
     A Live Photo's motion half, reached through its still and nowhere else;
     the original behind an edit, reached through the edit ("Show original");
     and a photo a Delete here has taken off the screen and the agent has not
-    finished deleting yet.
+    finished deleting yet. And everything in a library folder that is not
+    there right now, a network share away from home (core/roots.py).
     """
-    return [~Photo.is_companion, Photo.superseded_by.is_(None), Photo.trashed_at.is_(None)]
+    return [~Photo.is_companion, Photo.superseded_by.is_(None), Photo.trashed_at.is_(None),
+            *roots.reachable()]
 
 
 def listed(spec: QuerySpec) -> list:

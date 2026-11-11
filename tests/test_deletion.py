@@ -116,3 +116,16 @@ def test_already_trashed_is_missing(db):
     p1 = _add(db, "x.jpg", trashed_at=utcnow())
     db.commit()
     assert plan(db, [p1.id], get_settings()).missing == [p1.id]
+
+
+def test_a_photo_from_the_shared_library_is_left_out_of_its_syncs_too(db, monkeypatch):
+    from core.config import get_settings
+    from core.deletion import plan
+
+    s = get_settings()
+    monkeypatch.setattr(s, "library_roots", {**s.library_roots, "shared": "/x", "camera": "/y"})
+    monkeypatch.setattr(s, "sync_remotes", {"shared": "iclouddrive:SharedSync-1/All Photos"})
+    theirs, scan = _add(db, "IMG_1.HEIC", root="shared"), _add(db, "IMG_1.HEIC", root="camera")
+    db.commit()
+    assert plan(db, [theirs.id], s).excluded == ["IMG_1.HEIC"]
+    assert plan(db, [scan.id], s).excluded == []

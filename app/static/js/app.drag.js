@@ -166,6 +166,11 @@ App.drag = (() => {
 
   function download(card, original) {
     if (!card) return;
+    if (original && card.offloaded) {
+      // Nothing to save but an error page: the original is not on this disk.
+      App.toast("The original is in iCloud only. Get it in the viewer first.", { error: true });
+      return;
+    }
     if (original) save(`/media/original/${card.id}?download=1`, card.name);
     else save(card.export, card.export_name);
   }

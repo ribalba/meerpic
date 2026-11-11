@@ -26,19 +26,24 @@ companion.
 Only files that came from iCloud are kept out of later syncs: the sync
 root, top level, with sync on. Anything else (another library root, a
 subfolder) is not something a sync brings, and only moves to the trash.
+
+An offloaded video (core/offloading.py) has only its small copy here, so
+that is the file that moves to the trash.
 """
 
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field, fields
 from datetime import date
+from pathlib import Path
 
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from .config import Settings
-from .media import original_path, trash_path
+from .media import lowres_path, original_path, trash_path
 from .models import Photo
+from .offloading import offloaded
 from .timeutil import home_zone, utc_to_wall, utcnow
 
 # One Delete at a time is a review, not a purge: past this it is a mistake
@@ -110,11 +115,20 @@ class Plan:
         return cls(groups=groups, missing=list(data.get("missing") or []))
 
 
+def local_file(photo: Photo) -> Path | None:
+    """The file that is this photo here: its original, or the small copy of
+    a video whose original is in iCloud only."""
+    if offloaded(photo):
+        return lowres_path(photo.root, photo.name, photo.sig)
+    return original_path(photo.root, photo.rel_path)
+
+
 def in_icloud(photo: Photo, settings: Settings) -> bool:
     """Whether this file came from iCloud: where ``rclone copy`` puts every
-    file, the top of the sync root. Such a file would come back with the
-    next sync unless its name is excluded."""
-    return bool(settings.sync_enabled and photo.root == settings.sync_root and "/" not in photo.rel_path)
+    file, the top of a root a remote is copied into. Such a file would come
+    back with the next sync unless its name is excluded."""
+    return bool(settings.sync_enabled and photo.root in settings.sync_sources
+                and "/" not in photo.rel_path)
 
 
 def _group_rows(db: Session, photo: Photo) -> list[Photo]:
@@ -169,13 +183,15 @@ def plan(db: Session, ids: list[int], settings: Settings, *, today: date | None 
             if row.id in seen or row.trashed_at is not None:
                 continue
             seen.add(row.id)
-            local = original_path(row.root, row.rel_path)
+            local = local_file(row)
             trash = trash_path(row.root)
+            # A small copy goes in under its own name, beside the originals.
+            within = row.rel_path if not offloaded(row) or local is None else local.name
             group.steps.append(Step(
                 photo_id=row.id,
                 name=row.name,
                 local=str(local) if local else "",
-                trash=str(trash / day / row.rel_path) if trash else "",
+                trash=str(trash / day / within) if trash else "",
                 # `rclone copy` keeps the remote's names, so the local name is
                 # the name in "All Photos", disambiguating suffix and all.
                 excluded=row.name if in_icloud(row, settings) else None,

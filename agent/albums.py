@@ -25,6 +25,11 @@ agent runs them one at a time, see agent/main.py).
 The same listing keeps the names of photos deleted here honest (see
 core.models.DeletedFile): a name that "All Photos" now lists with another
 size and time is another photo's, one no sync should leave out.
+
+With more than one remote (``sync.remotes``: iCloud's Shared Library) each
+has albums of its own beside its "All Photos", listed and matched against
+its own root only, since names repeat from one library to the other. An
+album both have, Favorites say, is one album here with the members of both.
 """
 
 from __future__ import annotations
@@ -39,8 +44,9 @@ from datetime import datetime, timedelta, timezone
 from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.orm import Session
 
-from core.config import Settings
+from core.config import Settings, remote_parent
 from core.database import SessionLocal
+from core.media import OFFLOAD_DIR, lowres_name
 from core.models import SMART_ALBUMS, Album, DeletedFile, Photo, PhotoAlbum
 from core.timeutil import utcnow
 
@@ -81,9 +87,14 @@ def remote_path(parent: str, name: str) -> str:
     return f"{parent}{name}" if parent.endswith(":") else f"{parent.rstrip('/')}/{name}"
 
 
+def album_name(remote: str) -> str:
+    """The album a remote copies from ("All Photos")."""
+    return remote.rstrip("/").rsplit("/", 1)[-1].split(":")[-1]
+
+
 def main_album(settings: Settings) -> str:
     """The album ``sync.remote`` copies from ("All Photos")."""
-    return settings.sync_remote.rstrip("/").rsplit("/", 1)[-1].split(":")[-1]
+    return album_name(settings.sync_remote)
 
 
 def parse_dirs(text: str) -> list[str]:
@@ -216,59 +227,77 @@ class Outcome:
 
 def apply(db: Session, settings: Settings, listings: dict[str, list[Entry]],
           now: datetime | None = None) -> Outcome:
-    """Write one complete refresh. Commits; nothing is written on an error."""
+    """Write one complete refresh of ``sync.remote``'s albums alone. Only
+    where it is the one remote: membership is rebuilt for every root at
+    once, and another root's would go."""
+    if settings.sync_remotes:
+        raise ValueError("albums.apply is for one remote; with sync.remotes use apply_all")
+    return apply_all(db, settings, {settings.sync_root: listings}, now)
+
+
+def _main_of(settings: Settings, root: str) -> str:
+    remote = settings.sync_sources.get(root)
+    return album_name(remote) if remote else main_album(settings)
+
+
+def apply_all(db: Session, settings: Settings, by_root: dict[str, dict[str, list[Entry]]],
+              now: datetime | None = None) -> Outcome:
+    """Write one complete refresh: per library root, every album of the
+    remote copied into it. Commits; nothing is written on an error."""
     now = now or utcnow()
-    rows = db.execute(
-        select(Photo.id, Photo.name, Photo.rel_path, Photo.size, Photo.mtime_ns, Photo.favorite,
-               Photo.hidden, Photo.icloud_deleted, Photo.added_at)
-        .where(Photo.root == settings.sync_root)
-    ).all()
-    matcher = Matcher(r for r in rows if "/" not in r.rel_path)
-    main = main_album(settings)
-
-    members: dict[str, set[int]] = {}
-    favorite: set[int] = set()
-    hidden: set[int] = set()
-    added_main: dict[int, datetime] = {}
-    added_other: dict[int, datetime] = {}
+    members: dict[str, set[int]] = defaultdict(set)
     outcome = Outcome()
-    for name, entries in listings.items():
-        ids: set[int] = set()
-        for entry in entries:
-            photo_id = matcher.match(entry)
-            if photo_id is None:
-                continue
-            ids.add(photo_id)
-            if entry.favorite:
-                favorite.add(photo_id)
-            if entry.hidden:
-                hidden.add(photo_id)
-            if entry.added is not None:
-                (added_main if name == main else added_other).setdefault(photo_id, entry.added)
-        members[name] = ids
-        outcome.listed[name] = len(entries)
-        outcome.matched[name] = len(ids)
-    favorite |= members.get(FAVORITES, set())
-    hidden |= members.get(HIDDEN, set())
-    deleted = members.get(DELETED, set())
-
     changes = []
-    for r in rows:
-        want = {
-            "favorite": r.id in favorite,
-            "hidden": r.id in hidden,
-            "icloud_deleted": r.id in deleted,
-            # A photo no longer listed anywhere keeps the day it arrived.
-            "added_at": added_main.get(r.id) or added_other.get(r.id) or r.added_at,
-        }
-        if any(getattr(r, key) != value for key, value in want.items()):
-            changes.append({"id": r.id, **want})
+    for root, listings in by_root.items():
+        rows = db.execute(
+            select(Photo.id, Photo.name, Photo.rel_path, Photo.size, Photo.mtime_ns, Photo.favorite,
+                   Photo.hidden, Photo.icloud_deleted, Photo.added_at)
+            .where(Photo.root == root)
+        ).all()
+        matcher = Matcher(r for r in rows if "/" not in r.rel_path)
+        main = _main_of(settings, root)
+        here: dict[str, set[int]] = {}
+        favorite: set[int] = set()
+        hidden: set[int] = set()
+        added_main: dict[int, datetime] = {}
+        added_other: dict[int, datetime] = {}
+        for name, entries in listings.items():
+            ids: set[int] = set()
+            for entry in entries:
+                photo_id = matcher.match(entry)
+                if photo_id is None:
+                    continue
+                ids.add(photo_id)
+                if entry.favorite:
+                    favorite.add(photo_id)
+                if entry.hidden:
+                    hidden.add(photo_id)
+                if entry.added is not None:
+                    (added_main if name == main else added_other).setdefault(photo_id, entry.added)
+            here[name] = ids
+            members[name] |= ids
+            outcome.listed[name] = outcome.listed.get(name, 0) + len(entries)
+            outcome.matched[name] = outcome.matched.get(name, 0) + len(ids)
+        favorite |= here.get(FAVORITES, set())
+        hidden |= here.get(HIDDEN, set())
+        deleted = here.get(DELETED, set())
+
+        for r in rows:
+            want = {
+                "favorite": r.id in favorite,
+                "hidden": r.id in hidden,
+                "icloud_deleted": r.id in deleted,
+                # A photo no longer listed anywhere keeps the day it arrived.
+                "added_at": added_main.get(r.id) or added_other.get(r.id) or r.added_at,
+            }
+            if any(getattr(r, key) != value for key, value in want.items()):
+                changes.append({"id": r.id, **want})
     if changes:
         db.execute(update(Photo), changes)
     outcome.changed = len(changes)
 
     existing = {a.name: a for a in db.scalars(select(Album))}
-    for name in listings:
+    for name in outcome.listed:
         album = existing.get(name)
         if album is None:
             album = Album(name=name)
@@ -279,11 +308,14 @@ def apply(db: Session, settings: Settings, listings: dict[str, list[Entry]],
         album.remote_count = outcome.listed[name]
         album.synced_at = now
     for name, album in existing.items():
-        if name not in listings:
+        if name not in outcome.listed:
             db.delete(album)
     db.flush()
-    if main in listings:
-        outcome.released = release_names(db, settings, listings[main])
+    for root, listings in by_root.items():
+        main = _main_of(settings, root)
+        if main in listings:
+            outcome.released += release_names(db, settings, listings[main], root)
+            outcome.released += step_aside(db, settings, listings[main], root)
     # iCloud is the truth: membership is rebuilt, not patched.
     db.execute(delete(PhotoAlbum))
     pairs = [{"album_id": existing[name].id, "photo_id": photo_id}
@@ -294,15 +326,17 @@ def apply(db: Session, settings: Settings, listings: dict[str, list[Entry]],
     return outcome
 
 
-def release_names(db: Session, settings: Settings, entries: list[Entry]) -> int:
+def release_names(db: Session, settings: Settings, entries: list[Entry],
+                  root: str | None = None) -> int:
     """Stop excluding a deleted photo's name once iCloud lists a different
     photo under it: a new one that took the plain name after the deleted one
     left iCloud too. The deleted photo is still known by its content. Returns
-    how many names were given up."""
+    how many names were given up. ``entries`` is the main album of the remote
+    copied into ``root`` (``sync.root`` unless named)."""
     listed = {entry.name: entry for entry in entries}
     released = 0
     for note in db.scalars(select(DeletedFile).where(
-        DeletedFile.root == settings.sync_root, DeletedFile.name.is_not(None)
+        DeletedFile.root == (root or settings.sync_root), DeletedFile.name.is_not(None)
     )):
         entry = listed.get(note.name)
         if entry is None or entry.size < 0 or entry.size == note.size:
@@ -315,6 +349,34 @@ def release_names(db: Session, settings: Settings, entries: list[Entry]) -> int:
         note.name = None
         released += 1
     return released
+
+
+def step_aside(db: Session, settings: Settings, entries: list[Entry],
+               root: str | None = None) -> int:
+    """The same for an offloaded video (agent/offload.py): every sync
+    excludes its name, so when "All Photos" lists a different file under it
+    (the video left iCloud, and a new photo took the name), that photo would
+    never arrive. The row moves aside, to the path of its small copy in
+    .meerpic-offloaded, which no sync and no scan looks at: it is no longer
+    excluded, cannot be fetched (there is nothing to fetch), keeps its sig and
+    everything derived from it, and plays and exports its small copy as its
+    original. Returns how many names were given up."""
+    listed = {entry.name: entry for entry in entries}
+    moved = 0
+    for row in db.scalars(select(Photo).where(
+        Photo.root == (root or settings.sync_root), Photo.offloaded_at.is_not(None),
+        ~Photo.rel_path.contains("/"),
+    )):
+        entry = listed.get(row.name)
+        if entry is None or entry.size < 0 or entry.size == row.size:
+            continue
+        if entry.mtime is not None and abs(row.mtime_ns // 1_000_000_000 - entry.mtime) <= 1:
+            continue
+        log(f"albums: {row.name} in iCloud is another file now than the video offloaded here; "
+            "syncing it, and keeping the offloaded one by its small copy")
+        row.rel_path = f"{OFFLOAD_DIR}/{lowres_name(row.name, row.sig)}"
+        moved += 1
+    return moved
 
 
 def last_refresh(db: Session) -> datetime | None:
@@ -345,6 +407,9 @@ class AlbumsRun:
         self._stopped = False
         self._cancelled = False
         self._last_cancel_check = 0.0
+        # Every album as listed, by library root, once a refresh is done: an
+        # offload right after it checks against this instead of listing again.
+        self.listings: dict[str, dict[str, list[Entry]]] = {}
 
     def stop(self) -> None:
         self._stopped = True
@@ -365,15 +430,15 @@ class AlbumsRun:
             raise AlbumsError(result.reason(), auth=result.auth)
         return result
 
-    def list_albums(self) -> list[str]:
-        parent = self.settings.sync_parent
+    def list_albums(self, parent: str | None = None) -> list[str]:
+        parent = parent or self.settings.sync_parent
         names = parse_dirs(self._rclone("lsf", "--dirs-only", parent).out)
         if not names:
             raise AlbumsError(f"no albums under {parent}")
         return names
 
-    def list_album(self, name: str) -> list[Entry]:
-        path = remote_path(self.settings.sync_parent, name)
+    def list_album(self, name: str, parent: str | None = None) -> list[Entry]:
+        path = remote_path(parent or self.settings.sync_parent, name)
         return parse_entries(self._rclone("lsjson", "--metadata", "--files-only", path).out)
 
     def _say(self, message: str, progress: dict) -> None:
@@ -384,21 +449,31 @@ class AlbumsRun:
     def run(self) -> str:
         """Run to the end; returns the job's final status."""
         progress = {"albums": 0, "done": 0, "current": ""}
+        albums_read = 0
         try:
-            self._say("listing albums", progress)
-            names = self.list_albums()
-            listings: dict[str, list[Entry]] = {}
-            for done, name in enumerate(names):
-                progress = {"albums": len(names), "done": done, "current": name}
-                self._say(f"reading {name} ({done + 1}/{len(names)})", progress)
-                if len(name) > NAME_LIMIT:
-                    log(f"albums: skipped an album with a {len(name)}-character name", error=True)
-                    continue
-                listings[name] = self.list_album(name)
-            if not any(listings.values()) and self._has_rows():
-                raise AlbumsError("iCloud listed no photos at all; nothing was changed")
+            by_root: dict[str, dict[str, list[Entry]]] = {}
+            for root, remote in self.settings.sync_sources.items():
+                parent = remote_parent(remote)
+                # The first is iCloud's own library; the others say whose albums.
+                prefix = "" if root == self.settings.sync_root else f"{root}: "
+                self._say(f"listing {prefix}albums", progress)
+                names = self.list_albums(parent)
+                listings: dict[str, list[Entry]] = {}
+                for done, name in enumerate(names):
+                    progress = {"albums": len(names), "done": done, "current": prefix + name}
+                    self._say(f"reading {prefix}{name} ({done + 1}/{len(names)})", progress)
+                    if len(name) > NAME_LIMIT:
+                        log(f"albums: skipped an album with a {len(name)}-character name", error=True)
+                        continue
+                    listings[name] = self.list_album(name, parent)
+                if not any(listings.values()) and self._has_rows(root):
+                    where = "" if not prefix else f" under {parent}"
+                    raise AlbumsError(f"iCloud listed no photos at all{where}; nothing was changed")
+                by_root[root] = listings
+                albums_read += len(listings)
             with SessionLocal() as db:
-                outcome = apply(db, self.settings, listings)
+                outcome = apply_all(db, self.settings, by_root)
+            self.listings = by_root
         except rclone.Stopped:
             if self._cancelled:
                 self.status = "cancelled"
@@ -418,11 +493,11 @@ class AlbumsRun:
         self.status = "done"
         message = outcome.summary()
         jobs.finish(self.job_id, "done", message=message,
-                    progress={"albums": len(listings), "done": len(listings), "current": ""})
+                    progress={"albums": albums_read, "done": albums_read, "current": ""})
         log(f"albums: {message} ({outcome.changed} photo(s) changed)")
         return self.status
 
-    def _has_rows(self) -> bool:
+    def _has_rows(self, root: str) -> bool:
         with SessionLocal() as db:
             return db.scalar(select(func.count()).select_from(Photo)
-                             .where(Photo.root == self.settings.sync_root)) > 0
+                             .where(Photo.root == root)) > 0

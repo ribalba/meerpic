@@ -382,7 +382,12 @@ def test_user_text_only_ever_reaches_sql_as_a_parameter():
     assert any("DROP TABLE" in str(v) for v in c.params.values())
 
 
-def test_every_filter_compiles():
+def test_every_filter_compiles(monkeypatch):
+    from core.config import get_settings
+
+    # Without a Shared Library is:shared is a plain false, which would fold
+    # the whole WHERE into it.
+    monkeypatch.setattr(get_settings(), "sync_remotes", {"shared": "icloud:SharedSync-1/All Photos"})
     spec = parse_query(
         "in:Potsdam camera:Apple file:IMG is:live is:located near:52,13,5 "
         "bbox:170,-20,-170,-10 year:2024 after:2020 before:2025-06 album:Hühner "
@@ -395,6 +400,21 @@ def test_every_filter_compiles():
     assert "live_video_id IS NOT NULL" in sql
     assert "lower(albums.name) = lower(" in sql       # album: and is:whatsapp
     assert "photos.nsfw >=" in sql
+    assert "photos.root IN" in sql                    # is:shared
+
+
+def test_is_shared_is_the_roots_a_shared_library_is_copied_into(monkeypatch):
+    from core.config import get_settings
+
+    s = get_settings()
+    assert "WHERE false" in str(compiled(filter_clauses(parse_query("is:shared"))))
+    monkeypatch.setattr(s, "sync_remotes", {
+        "shared": "iclouddrive:SharedSync-3535C497/All Photos",
+        "camera": "nas:Photos/Camera",
+    })
+    c = compiled(filter_clauses(parse_query("is:shared")))
+    assert "photos.root IN" in str(c)
+    assert ["shared"] in c.params.values()
 
 
 def test_the_nsfw_threshold_is_read_when_the_query_is_built(monkeypatch):

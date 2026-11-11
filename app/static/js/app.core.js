@@ -639,10 +639,15 @@ App.icons = {
   // Two prints, one behind the other.
   album: '<rect x="3.5" y="7.5" width="13.5" height="12.5" rx="2"/><path d="M7 4.5h11.5a2 2 0 0 1 2 2v10"/>',
   chat: '<path d="M5 19.5l1.2-3.7A7.6 7.6 0 1 1 9 18.6z"/>',
+  // Two people, one behind the other: iCloud's badge for its Shared Library.
+  people: '<circle cx="9" cy="8.5" r="3.2"/><path d="M3.5 19.5a5.5 5.5 0 0 1 11 0"/>'
+        + '<path d="M15.2 5.4a3.2 3.2 0 0 1 0 6.2"/><path d="M17.2 14.3a5.5 5.5 0 0 1 3.3 5.2"/>',
   // A tray with something in it: pictures that arrived rather than were taken.
   inbox: '<path d="M3.8 13.5h4.7l1.5 2.5h4l1.5-2.5h4.7"/>'
        + '<path d="M6 5h12l2.2 8.5v5A1.5 1.5 0 0 1 18.7 20H5.3a1.5 1.5 0 0 1-1.5-1.5v-5z"/>',
   edit: '<path d="M4.5 19.5h3.8L19 8.8a2.7 2.7 0 0 0-3.8-3.8L4.5 15.7z"/><line x1="13.8" y1="6.4" x2="17.6" y2="10.2"/>',
+  // An original that is in iCloud only: an offloaded video.
+  cloud: '<path d="M7.2 18.5h9.9a4 4 0 0 0 .5-7.97 5.6 5.6 0 0 0-10.8 1.1A3.5 3.5 0 0 0 7.2 18.5z"/>',
 };
 
 App.icon = (name, size = 17) => {

@@ -107,17 +107,57 @@ App.status = (() => {
     });
   }
 
-  function syncRunning(job) {
+  /* The jobs that talk to iCloud. The agent runs them one at a time, oldest
+     first (REMOTE_KINDS in agent/main.py), so a queued one waits for the one
+     running and then for those queued before it. */
+  const REMOTE = {
+    sync: "the sync",
+    albums: "the album refresh",
+    delete: "a delete",
+    offload: "the video offload",
+    fetch: "a download from iCloud",
+  };
+
+  function ahead(job, s) {
+    const others = ((s && s.jobs) || []).filter((j) => j.id !== job.id && REMOTE[j.kind]);
+    const running = others.filter((j) => j.status === "running");
+    const queued = others.filter((j) => j.status === "queued" && j.id < job.id).sort((a, b) => a.id - b.id);
+    return [...running, ...queued];
+  }
+
+  /* Why a queued iCloud job has not started, in one sentence. */
+  function waitText(job, s = last) {
+    if (App.status.agentAlive() === false) return "Waiting for the agent, which is not running";
+    const [first, ...rest] = ahead(job, s);
+    if (!first) return "Waiting for the agent to start it";
+    const then = !rest.length ? ""
+      : rest.length === 1 ? `, then ${REMOTE[rest[0].kind]}`
+        : `, then ${App.fmt.plural(rest.length, "more job")}`;
+    return `Waits for ${REMOTE[first.kind]}${then}`;
+  }
+
+  /* The sentence, and under it what the job in front is doing right now. */
+  function waiting(job, s) {
+    const nodes = [el("div", { class: "st-line", text: waitText(job, s) })];
+    const first = ahead(job, s)[0];
+    if (first && first.status === "running" && first.message && App.status.agentAlive() !== false) {
+      nodes.push(el("div", { class: "st-current", title: first.message, text: first.message }));
+    }
+    return nodes;
+  }
+
+  function syncRunning(job, s) {
     const p = job.progress || {};
     const nodes = [];
     if (job.status === "queued") {
       nodes.push(head("Sync requested", "busy", cancelLink(job)));
-      nodes.push(el("div", { class: "st-line", text:
-        App.status.agentAlive() === false ? "Waiting for the agent, which is not running" : "Waiting for the agent to start it" }));
+      nodes.push(...waiting(job, s));
       return nodes;
     }
     const pct = Number(p.percent);
     nodes.push(head("Syncing with iCloud", "busy", cancelLink(job)));
+    // With more than one remote ([sync] remotes), which library this bar is about.
+    if (p.steps > 1) nodes.push(el("div", { class: "st-line" }, el("span", { text: `${p.source} (${p.step} of ${p.steps})` })));
     nodes.push(progressBar(p));
     // Bytes first, with the percentage, because that is what the bar is
     // drawn from; the file count is the number that means something.
@@ -195,6 +235,8 @@ App.status = (() => {
     // the count only means something while the agent is actually at them.
     const phase = String((s.agent && s.agent.phase) || "");
     if (idx.previews && (parts.length || /preview/i.test(phase))) parts.push(App.fmt.plural(idx.previews, "video"));
+    // Old videos' small copies, made before their originals can go.
+    if (idx.lowres && (parts.length || /preview/i.test(phase))) parts.push(`${App.fmt.n(idx.lowres)} small ${idx.lowres === 1 ? "copy" : "copies"}`);
     const nodes = [];
     if (parts.length) {
       nodes.push(el("div", { class: "st-line st-index" },
@@ -225,9 +267,7 @@ App.status = (() => {
     const n = Number(p.total) || (job.params && Array.isArray(job.params.photo_ids) ? job.params.photo_ids.length : 0);
     if (job.status === "queued") {
       nodes.push(head(n ? `Deleting ${App.fmt.plural(n, "photo")}` : "Delete requested", "busy"));
-      const why = App.status.agentAlive() === false ? "Waiting for the agent, which is not running"
-        : active(s.sync) ? "Waits for the sync to finish" : "Waiting for the agent to start it";
-      nodes.push(el("div", { class: "st-line", text: why }));
+      nodes.push(...waiting(job, s));
       return nodes;
     }
     const done = Number(p.done) || 0;
@@ -289,13 +329,26 @@ App.status = (() => {
     return nodes;
   }
 
+  /* A library folder that is not there right now, a network share away from
+     home. Its photos are out of the grid until it is back, and this says so,
+     or the grid would just look smaller. */
+  function away(s) {
+    return (s.offline || []).map((o) => el("div", {
+      class: "st-line",
+      title: `${o.path} cannot be reached. Its photos come back as soon as it can.`,
+    },
+    el("span", { class: "st-dot stalled" }),
+    el("span", { text: o.photos ? `${o.root} not reachable · ${App.fmt.plural(o.photos, "photo")} hidden` : `${o.root} not reachable` })));
+  }
+
   function paint(s) {
     const job = s.sync;
-    const nodes = active(job) ? syncRunning(job) : syncFinished(s);
+    const nodes = active(job) ? syncRunning(job, s) : syncFinished(s);
     const del = deleting(s);
     if (del.length && nodes.length) nodes.push(el("div", { class: "st-sep" }));
     nodes.push(...del);
     nodes.push(...indexing(s));
+    nodes.push(...away(s));
     card.replaceChildren(...nodes);
 
     const alive = Boolean(s.agent && s.agent.alive);
@@ -344,7 +397,7 @@ App.status = (() => {
   }
 
   return {
-    init, start, stop, poll, sync,
+    init, start, stop, poll, sync, waitText,
     last: () => last,
     /* true, false, or null when nobody has asked yet. */
     agentAlive: () => (last ? Boolean(last.agent && last.agent.alive) : null),

@@ -20,6 +20,13 @@
    strip of frames) stands in as a filmstrip, so there is something of the
    clip to see besides a spinner.
 
+   An old video may be offloaded: its original is in iCloud only and what is
+   here is a small copy (480p), which plays at once. "Get the original" asks
+   the agent to download it again, and once it is back and its 720p copy is
+   made, that takes over at the same moment of the clip. A video old enough
+   for that whose original is still here plays its small copy too while the
+   720p one is being made.
+
    A picture the classifier flagged opens blurred behind a Show button when
    the settings ask for that; once shown it stays shown for the session.
 
@@ -244,10 +251,26 @@ App.viewer = (() => {
   }
 
   function wait(text, spin = true) {
+    waitEl.classList.remove("vw-note");
     if (!text) { waitEl.hidden = true; return; }
     // Not straight into replaceChildren: it writes a null out as "null".
     waitEl.replaceChildren(...[spin ? App.el("span", { class: "spinner" }) : null, App.el("span", { text })].filter(Boolean));
     waitEl.hidden = false;
+  }
+
+  /* The pill over a video that is playing: at the top, with what can be
+     done about it. */
+  function note(...nodes) {
+    wait("");
+    waitEl.replaceChildren(...nodes.filter(Boolean));
+    waitEl.classList.add("vw-note");
+    waitEl.hidden = false;
+  }
+
+  /* wait(), in that place: something plays underneath. */
+  function tell(text, spin = true) {
+    wait(text, spin);
+    if (text) waitEl.classList.add("vw-note");
   }
 
   function stopMedia() {
@@ -357,8 +380,20 @@ App.viewer = (() => {
     const mine = token;
     fit();
     if (card.kind === "video") {
-      if (d.urls && d.urls.video) play(d.urls.video);
-      else {
+      const urls = d.urls || {};
+      if (urls.video) play(urls.video);
+      else if (d.offloaded) {
+        if (urls.lowres) play(urls.lowres);
+        else film(Object.assign({}, card, d));
+        offerOriginal(d);
+      } else if (urls.lowres) {
+        // Old enough to be offloaded, original still here: the small copy
+        // now, the 720p one when it is made.
+        play(urls.lowres);
+        prepare(card.id, false, true).then((fresh) => {
+          if (fresh && mine === token && fresh.urls && fresh.urls.video) { detail = fresh; swap(fresh.urls.video); }
+        });
+      } else {
         film(Object.assign({}, card, d));
         prepare(card.id, false).then((fresh) => {
           if (fresh && mine === token && fresh.urls && fresh.urls.video) { detail = fresh; play(fresh.urls.video); }
@@ -387,34 +422,122 @@ App.viewer = (() => {
 
   /* Ask the agent for a playable copy and wait for it. For a Live still the
      server enqueues the companion's preview; the still's own detail says when
-     it is ready (`urls.live`). */
-  async function prepare(id, forLive) {
+     it is ready (`urls.live`). `quiet` says nothing on screen: something
+     plays already, and this only makes it better. */
+  async function prepare(id, forLive, quiet = false) {
     const mine = token;
     const agent = App.status.agentAlive();
-    wait(forLive ? "Preparing the motion..." : "Preparing a playable copy...");
+    const say = (...args) => { if (!quiet && mine === token) wait(...args); };
+    say(forLive ? "Preparing the motion..." : "Preparing a playable copy...");
     let answer;
     try {
       answer = await App.api.post(`/api/photos/${id}/preview`);
     } catch (err) {
-      if (mine === token) wait(`No playable copy: ${err.message}`, false);
+      say(`No playable copy: ${err.message}`, false);
       return null;
     }
     if (mine !== token) return null;
     if (answer.ready) {
       const d = await fetchDetail(id, true).catch(() => null);
-      if (mine === token) wait("");
+      say("");
       return d;
     }
-    if (agent === false) wait("Waiting for the agent, which is not running (make up)", true);
+    if (agent === false) say("Waiting for the agent, which is not running (make up)", true);
     for (let n = 0; n < POLL_LIMIT; n++) {
       await new Promise((r) => setTimeout(r, POLL));
       if (mine !== token) return null;
       const d = await fetchDetail(id, true).catch(() => null);
       if (mine !== token) return null;
-      if (d && d.preview_ready) { wait(""); return d; }
+      if (d && d.preview_ready) { say(""); return d; }
     }
-    if (mine === token) wait("Still not ready: the agent may be busy with a sync or a large video.", false);
+    say("Still not ready: the agent may be busy with a sync or a large video.", false);
     return null;
+  }
+
+  /* Another copy of the same clip, taking over where the one playing is. */
+  function swap(url) {
+    const v = videoEl;
+    if (!v) return;
+    const at = v.currentTime || 0;
+    const going = !v.paused && !v.ended;
+    unfilm();
+    v.controls = true;
+    v.addEventListener("loadedmetadata", () => {
+      try { v.currentTime = at; } catch (e) { /* not seekable yet; from the start then */ }
+      if (going && !isVeiled(current())) v.play().catch(() => {});
+    }, { once: true });
+    v.src = url;
+  }
+
+  // --- offloaded videos: the original back from iCloud -----------------------------
+
+  const FETCH_LIMIT = 900;  // half an hour of asking: a large video behind a sync
+
+  /* What the pill says over an offloaded video's small copy. */
+  function offerOriginal(d) {
+    const size = d.lowres_size ? ` (${App.fmt.bytes(d.lowres_size)})` : "";
+    const icon = App.el("span", { html: App.icon("cloud", 16) });
+    if (!d.fetchable) {
+      note(icon, App.el("span", { text: `Small copy${size}: the original is no longer in iCloud` }));
+      return;
+    }
+    const id = d.id;
+    note(icon, App.el("span", { text: `Small copy${size}, the original is in iCloud` }),
+      App.el("button", { class: "link", type: "button", text: "Get the original", onclick: () => fetchOriginal(id) }));
+  }
+
+  /* The fetch job for this photo, as the status poll last saw it. */
+  function fetchJob(id) {
+    const s = App.status.last();
+    const jobs = (s && s.jobs) || [];
+    return jobs.filter((j) => j.kind === "fetch" && j.params && Number(j.params.photo_id) === id)
+      .sort((a, b) => b.id - a.id)[0] || null;
+  }
+
+  async function fetchOriginal(id) {
+    const mine = token;
+    tell("Asking iCloud for the original...");
+    let answer;
+    try {
+      answer = await App.api.post(`/api/photos/${id}/fetch`);
+    } catch (err) {
+      if (mine === token) tell(`Could not get the original: ${err.message}`, false);
+      return;
+    }
+    App.status.poll();
+    let d = null;
+    for (let n = 0; n < FETCH_LIMIT && !answer.ready; n++) {
+      await new Promise((r) => setTimeout(r, POLL));
+      if (mine !== token) return;
+      const job = fetchJob(id);
+      if (job && job.id === answer.job_id && job.status === "failed") {
+        tell(`Could not get the original: ${job.error || job.message}`, false);
+        return;
+      }
+      if (job && job.id === answer.job_id && job.status === "cancelled") { tell("Cancelled", false); return; }
+      const p = (job && job.progress) || {};
+      if (job && job.status === "running" && p.total_bytes) {
+        tell(`Downloading from iCloud: ${Math.round(Number(p.percent) || 0)}% of ${App.fmt.bytes(p.total_bytes)}`);
+      } else if (job && job.status === "queued") {
+        tell(App.status.agentAlive() === false ? "Waiting for the agent, which is not running (make up)"
+          : App.status.waitText(job));
+      }
+      d = await fetchDetail(id, true).catch(() => null);
+      if (mine !== token) return;
+      if (d && !d.offloaded) break;
+      d = null;
+    }
+    if (!d && !answer.ready) { tell("Still downloading: the agent may be busy with a sync.", false); return; }
+    d = d || await fetchDetail(id, true).catch(() => null);
+    if (mine !== token || !d) return;
+    detail = d;
+    paintInfo();
+    if (d.urls && d.urls.video) { tell(""); swap(d.urls.video); return; }
+    tell("Original here. Preparing a playable copy...");
+    const fresh = await prepare(id, false, true);
+    if (mine !== token) return;
+    if (fresh && fresh.urls && fresh.urls.video) { detail = fresh; tell(""); swap(fresh.urls.video); }
+    else tell("The original is here; its playable copy is not ready yet.", false);
   }
 
   // --- Live Photos -------------------------------------------------------------------
@@ -529,6 +652,12 @@ App.viewer = (() => {
     if (albums.length) out.push(row("album", App.el("div", { class: "info-chips" }, ...albums.map(albumChip))));
     if (c.hidden) out.push(row("eyeOff", line("Hidden"), line("In the Hidden album, so left out unless asked for (is:hidden).", "info-sub")));
     if (c.icloud_deleted) out.push(row("trash", line("Recently deleted"), line("In Recently Deleted in iCloud, so left out unless asked for (is:deleted).", "info-sub")));
+    if (c.offloaded) {
+      const small = c.lowres_size ? `a small copy (${App.fmt.bytes(c.lowres_size)})` : "only a small copy";
+      out.push(row("cloud", line("Original in iCloud only"),
+        line(`Here is ${small}${c.offloaded_at ? `, offloaded ${App.fmt.ago(c.offloaded_at)}` : ""} (is:offloaded).`, "info-sub"),
+        c.fetchable ? App.el("div", {}, linkBtn("Get the original", () => fetchOriginal(c.id))) : null));
+    }
     return out;
   }
 
@@ -732,12 +861,13 @@ App.viewer = (() => {
     const exportExt = String(c.export_name || "").split(".").pop().toUpperCase();
     const actions = App.el("div", { class: "info-actions" },
       App.el("button", { class: "btn", onclick: () => App.drag.download(current()), text: `Download${exportExt ? ` (${exportExt})` : ""}` }),
-      App.el("button", { class: "btn", onclick: () => App.drag.download(current(), true), text: "Download original" }),
+      // An offloaded original is not here to hand over; its row says how to get it.
+      c.offloaded ? null : App.el("button", { class: "btn", onclick: () => App.drag.download(current(), true), text: "Download original" }),
       App.el("button", { class: "btn", onclick: () => App.drag.copy(current()), text: "Copy" }),
       App.el("button", { class: "btn", onclick: () => App.shell.similar(card.id), text: "Find similar" }),
       App.el("button", { class: "btn", onclick: () => showInAll(), text: "Show in all photos" }),
       located(c) && App.state.map.tile_url ? App.el("button", { class: "btn", onclick: () => showOnMap(), text: "Show on map" }) : null,
-      App.el("button", {
+      c.offloaded ? null : App.el("button", {
         class: "btn", text: "Open original",
         onclick: () => window.open((c.urls && c.urls.original) || `/media/original/${c.id}`, "_blank", "noopener"),
       }),

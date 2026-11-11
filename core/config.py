@@ -66,6 +66,10 @@ _FIELD_MAP: dict[tuple[str, str], str] = {
     ("video", "height"): "video_height",
     ("video", "crf"): "video_crf",
     ("video", "preset"): "video_preset",
+    ("offload", "after"): "offload_after",
+    ("offload", "height"): "offload_height",
+    ("offload", "crf"): "offload_crf",
+    ("offload", "keep_fetched"): "offload_keep_fetched",
     ("search", "model"): "search_model",
     ("search", "min_score"): "search_min_score",
     ("search", "similar_min_score"): "similar_min_score",
@@ -73,6 +77,8 @@ _FIELD_MAP: dict[tuple[str, str], str] = {
     ("sync", "rclone"): "rclone",
     ("sync", "remote"): "sync_remote",
     ("sync", "root"): "sync_root",
+    ("sync", "remotes"): "sync_remotes",
+    ("sync", "keep_free"): "sync_keep_free",
     ("sync", "args"): "sync_args",
     ("sync", "interval"): "sync_interval",
     ("sync", "albums"): "sync_albums",
@@ -95,6 +101,21 @@ _FIELD_MAP: dict[tuple[str, str], str] = {
     ("share", "jpeg_quality"): "share_jpeg_quality",
     ("share", "max_edge"): "share_max_edge",
 }
+
+
+def remote_parent(remote: str) -> str:
+    """The remote folder a remote's albums are in: its parent.
+
+    ``iclouddrive:PrimarySync/All Photos`` -> ``iclouddrive:PrimarySync``.
+    rclone's iCloud Photos backend lists every album as a sibling of
+    "All Photos", which is the whole reason this works.
+    """
+    remote = remote.rstrip("/")
+    head, sep, _ = remote.rpartition("/")
+    if sep:
+        return head
+    name, colon, _ = remote.partition(":")
+    return f"{name}{colon}"
 
 
 def expand(path: str | os.PathLike) -> Path:
@@ -202,6 +223,22 @@ class Settings(BaseSettings):
     video_crf: int = 23
     video_preset: str = "veryfast"
 
+    # --- offload ---
+    # Videos taken more than this many days ago keep only a small copy here
+    # (in .meerpic-offloaded inside the library folder), and their original
+    # is deleted once iCloud is seen to hold the same file. Opening one plays
+    # the small copy; "Get the original" downloads it again. 0 = off, which
+    # it is unless asked for: it is the one thing that deletes originals.
+    # Only videos from iCloud (the top of sync.root), never a Live Photo's
+    # motion. See agent/offload.py.
+    offload_after: int = 0
+    # Short edge of the small copy, and how hard it is compressed. 480 at 28
+    # is about 1.6% of an iPhone's 4K original.
+    offload_height: int = 480
+    offload_crf: int = 28
+    # Days an original that was downloaded again stays before it goes again.
+    offload_keep_fetched: int = 30
+
     # --- search ---
     # The model that turns photos and search words into vectors. See
     # core/embed.py for the ones that are known to work and what they cost.
@@ -217,6 +254,14 @@ class Settings(BaseSettings):
     sync_remote: str = "iclouddrive:PrimarySync/All Photos"
     # Which of library.roots the remote is copied into.
     sync_root: str = "icloud"
+    # More remotes, each copied into a library root of its own: root name ->
+    # remote. iCloud's Shared Library is the one this is for (`rclone lsf
+    # iclouddrive:` lists it as SharedSync-<id>). Its file names are only
+    # unique within it, so it never shares a folder with sync.root's.
+    sync_remotes: dict[str, str] = {}
+    # Gigabytes a sync leaves free on the disk it copies to. It stops there
+    # and says so; the offload after it makes room for the next. 0 = no limit.
+    sync_keep_free: float = 10.0
     # Extra rclone arguments, appended as given.
     sync_args: list[str] = []
     # Minutes between automatic syncs. 0 means only when asked: the button,
@@ -298,20 +343,61 @@ class Settings(BaseSettings):
                 raise ValueError(f"library root name {name!r} must be 1-64 characters without '/'")
         return v
 
-    @field_validator("video_height")
+    @field_validator("video_height", "offload_height")
     @classmethod
-    def _height(cls, v: int) -> int:
+    def _height(cls, v: int, info) -> int:
         if v < 144 or v > 2160:
-            raise ValueError("video.height must be between 144 and 2160")
+            key = "video.height" if info.field_name == "video_height" else "offload.height"
+            raise ValueError(f"{key} must be between 144 and 2160")
         return v - (v % 2)
 
+    @field_validator("offload_after", "offload_keep_fetched")
+    @classmethod
+    def _days(cls, v: int, info) -> int:
+        if v < 0:
+            key = "offload.after" if info.field_name == "offload_after" else "offload.keep_fetched"
+            raise ValueError(f"{key} is a number of days, 0 or more")
+        return v
+
+    @field_validator("sync_keep_free")
+    @classmethod
+    def _keep_free(cls, v: float) -> float:
+        if v < 0:
+            raise ValueError("sync.keep_free is a number of gigabytes, 0 or more")
+        return v
+
     @model_validator(mode="after")
-    def _sync_root_exists(self):
-        if self.sync_enabled and self.sync_root not in self.library_roots:
-            have = ", ".join(sorted(self.library_roots))
+    def _sync_roots(self):
+        if not self.sync_enabled:
+            return self
+        have = ", ".join(sorted(self.library_roots))
+        if self.sync_root not in self.library_roots:
             raise ValueError(
                 f"sync.root is {self.sync_root!r}, which is not one of library.roots ({have})"
             )
+        for root, remote in self.sync_remotes.items():
+            if root not in self.library_roots:
+                raise ValueError(
+                    f"sync.remotes copies into {root!r}, which is not one of library.roots ({have})"
+                )
+            if root == self.sync_root:
+                raise ValueError(f"sync.remotes copies into {root!r}, which is sync.root's already")
+            if not remote.strip():
+                raise ValueError(f"sync.remotes has an empty remote for {root!r}")
+        remotes = [remote.rstrip("/") for remote in self.sync_sources.values()]
+        if len(set(remotes)) != len(remotes):
+            raise ValueError("sync.remotes names a remote twice, or sync.remote again")
+        # rclone copies by name, and two iCloud libraries reuse each other's
+        # names (IMG_1234 on two phones): one folder for both would have one
+        # library's photos overwrite the other's.
+        folders = {root: self.root_path(root) for root in self.sync_sources}
+        for root, folder in folders.items():
+            for other, theirs in folders.items():
+                if root != other and (folder == theirs or folder.is_relative_to(theirs)):
+                    raise ValueError(
+                        f"library root {root!r} ({folder}) is inside {other!r} ({theirs}): "
+                        "every remote in [sync] needs a folder of its own"
+                    )
         return self
 
     # --- resolved paths ---
@@ -334,18 +420,27 @@ class Settings(BaseSettings):
 
     @property
     def sync_parent(self) -> str:
-        """The remote folder the albums are in: the parent of ``sync.remote``.
+        """The remote folder the albums are in: the parent of ``sync.remote``."""
+        return remote_parent(self.sync_remote)
 
-        ``iclouddrive:PrimarySync/All Photos`` -> ``iclouddrive:PrimarySync``.
-        rclone's iCloud Photos backend lists every album as a sibling of
-        "All Photos", which is the whole reason this works.
-        """
-        remote = self.sync_remote.rstrip("/")
-        head, sep, _ = remote.rpartition("/")
-        if sep:
-            return head
-        name, colon, _ = remote.partition(":")
-        return f"{name}{colon}"
+    @property
+    def sync_sources(self) -> dict[str, str]:
+        """Every remote a sync copies, by the library root it copies into:
+        ``sync.remote`` first, then ``sync.remotes`` in their order."""
+        return {self.sync_root: self.sync_remote, **self.sync_remotes}
+
+    @property
+    def shared_roots(self) -> list[str]:
+        """The roots that iCloud's Shared Library is copied into: those whose
+        remote is in a ``SharedSync-<id>`` zone (``is:shared``)."""
+        return [root for root, remote in self.sync_sources.items()
+                if remote_parent(remote).split(":", 1)[-1].rsplit("/", 1)[-1].startswith("SharedSync-")]
+
+    @property
+    def offload_enabled(self) -> bool:
+        """Whether old videos are offloaded: asked for, and a sync to fetch
+        them back with."""
+        return self.offload_after > 0 and self.sync_enabled
 
     @property
     def workers(self) -> int:

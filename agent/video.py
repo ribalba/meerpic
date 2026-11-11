@@ -273,11 +273,20 @@ def plan(
     height: int = 720,
     crf: int = 23,
     preset: str = "veryfast",
+    fps: int = 60,
+    audio: str = "128k",
+    remux: bool = True,
 ) -> Plan:
-    """How to turn this source into a preview with this ffmpeg."""
+    """How to turn this source into a preview with this ffmpeg.
+
+    ``remux=False`` always transcodes: an offloaded video's small copy is
+    made to be small (``agent/offload.py``), and a phone's H.264 at 480p is
+    still several times what CRF 28 makes of it.
+    """
     short = min(info.width, info.height)
     if (
-        info.codec == "h264"
+        remux
+        and info.codec == "h264"
         and info.pix_fmt in ("yuv420p", "yuvj420p")
         and info.bits == 8
         and not info.hdr
@@ -327,9 +336,9 @@ def plan(
         "-vf", ",".join(chain),
         # Slow-motion clips are 120 or 240 fps; a browser preview does not
         # need more than 60 and some decoders refuse more.
-        "-fpsmax", "60",
+        "-fpsmax", str(fps),
         *venc,
-        "-c:a", "aac", "-b:a", "128k",
+        "-c:a", "aac", "-b:a", audio,
         "-movflags", "+faststart",
     ]
     return Plan("transcode", args, encoder=encoder, tonemapped=tonemapped, note="; ".join(notes))

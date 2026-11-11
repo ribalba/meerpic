@@ -78,7 +78,7 @@ def test_state_says_what_the_client_needs_first(client, empty, db):
     # Companions are not photos you took; a Live Photo is one photo.
     assert s["counts"] == {"all": 4, "photos": 3, "videos": 1, "live": 1, "screenshots": 1,
                            "located": 1, "undated": 1, "favorites": 0, "whatsapp": 0,
-                           "saved": 2, "nsfw": 0, "hidden": 0, "deleted": 0}
+                           "saved": 2, "shared": 0, "nsfw": 0, "hidden": 0, "deleted": 0}
 
 
 def test_state_says_whether_there_is_a_delete_button(client, empty, settings, monkeypatch):
@@ -124,7 +124,8 @@ def test_status_of_an_empty_install(client, empty):
     assert s["last_sync"] is None
     assert s["jobs"] == []
     assert s["index"] == {"total": 0, "meta": 0, "thumbs": 0, "embeddings": 0, "previews": 0,
-                          "story": 0, "nsfw": 0, "faces": 0, "ocr": 0, "failed": 0}
+                          "story": 0, "nsfw": 0, "faces": 0, "ocr": 0, "lowres": 0,
+                          "offloaded": 0, "failed": 0}
     assert s["latest"] is None
 
 

@@ -68,16 +68,17 @@ def check_ffprobe(settings: Settings) -> tuple[str, str]:
 def check_rclone(settings: Settings) -> tuple[str, str]:
     if not settings.sync_enabled:
         return OK, "sync disabled, not needed"
-    remote = settings.sync_remote.split(":", 1)[0] + ":"
+    wanted = list(dict.fromkeys(r.split(":", 1)[0] + ":" for r in settings.sync_sources.values()))
     try:
         proc = _run([settings.rclone, "listremotes"])
     except (OSError, subprocess.SubprocessError) as exc:
         return FAIL, f"not runnable ({settings.rclone}): {exc}"
     remotes = proc.stdout.decode("utf-8", "replace").split()
-    if remote not in remotes:
-        have = ", ".join(remotes) or "none"
-        return FAIL, f"remote {remote} is not configured (have: {have}); run: rclone config"
-    return OK, f"remote {remote} configured"
+    for remote in wanted:
+        if remote not in remotes:
+            have = ", ".join(remotes) or "none"
+            return FAIL, f"remote {remote} is not configured (have: {have}); run: rclone config"
+    return OK, f"remote {', '.join(wanted)} configured"
 
 
 def check_root(path) -> tuple[str, str]:

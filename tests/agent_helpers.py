@@ -75,6 +75,9 @@ def use_library(tmp_path, monkeypatch):
     monkeypatch.setattr(s, "cache_dir", str(tmp_path / "cache"))
     monkeypatch.setattr(s, "video_previews", "all")
     monkeypatch.setattr(s, "agent_workers", 2)
+    # A test's disk may well have less than sync.keep_free left; the tests
+    # that are about it set their own.
+    monkeypatch.setattr(s, "sync_keep_free", 0)
     # Whatever a test forgets to fake, rclone never reaches a real remote.
     monkeypatch.setattr(s, "rclone", str(rclone_guard(tmp_path)))
     yield root
@@ -110,6 +113,20 @@ def local_remote(tmp_path: Path, monkeypatch, album: str = "All Photos") -> Path
     folder.mkdir(parents=True, exist_ok=True)
     monkeypatch.setattr(settings(), "sync_remote", str(folder))
     return folder
+
+
+def shared_library(tmp_path: Path, monkeypatch, root: str = "shared") -> tuple[Path, Path]:
+    """A second root with a remote of its own, the way iCloud's Shared
+    Library is set up: ``<tmp>/shared-remote/All Photos`` copied into
+    ``<tmp>/shared``. Returns (the remote's folder, the root's folder)."""
+    s = settings()
+    remote = tmp_path / "shared-remote" / "All Photos"
+    remote.mkdir(parents=True, exist_ok=True)
+    folder = tmp_path / root
+    folder.mkdir(exist_ok=True)
+    monkeypatch.setattr(s, "library_roots", {**s.library_roots, root: str(folder)})
+    monkeypatch.setattr(s, "sync_remotes", {root: str(remote)})
+    return remote, folder
 
 
 def settings():

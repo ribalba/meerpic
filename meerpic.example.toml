@@ -33,8 +33,14 @@ timezone = "system"
 # without re-indexing: change the path here and nothing else. More than one is
 # fine, e.g. the phone's library and a folder of camera imports:
 #   roots = { icloud = "~/Pictures/iCloud", camera = "~/Pictures/Camera" }
+# iCloud's Shared Library needs one too (see [sync] remotes):
+#   roots = { icloud = "~/Pictures/iCloud", shared = "~/Pictures/iCloud-Shared" }
 # docker-compose.yml mounts ~/Pictures (MEERPIC_PICTURES in .env); a folder
 # outside it needs a mount of its own.
+# A folder on a network share or a USB disk is fine too. While it is not
+# there, its photos are hidden, and they are back when it is (see the README,
+# "A folder that is not always there", for the mount):
+#   roots = { icloud = "~/Pictures/iCloud", nas = "/mnt/nas/Photos" }
 roots = { icloud = "~/Pictures/iCloud" }
 # The Delete button moves files to .meerpic-trash in their library folder
 # (emptied after 30 days). A photo from iCloud stays in iCloud and on the
@@ -67,6 +73,23 @@ height = 720
 crf = 23
 preset = "veryfast"
 
+[offload]
+# Videos taken more than this many days ago keep only a small copy here, in
+# .meerpic-offloaded inside the library folder, and their original is deleted
+# once iCloud is seen to hold the very same file (name, size and time). Open
+# one and the small copy plays at once; "Get the original" downloads it again.
+# Only videos from iCloud, never a Live Photo's motion. 0 = off: this is the
+# one setting that deletes originals, so it is off until you set it. Try it
+# first without deleting anything:
+#   OFFLOAD_AFTER=365 docker compose run --rm agent python -m agent.main --offload --dry-run
+after = 0
+# Short edge of the small copy, and its compression. 480 at 28 is about 1.6%
+# of an iPhone's 4K original: a 141 MB clip becomes 2.2 MB.
+height = 480
+crf = 28
+# Days an original you downloaded again stays before it is offloaded again.
+keep_fetched = 30
+
 [search]
 # The model behind "find similar" and searching for words. The default reads
 # German as well as English and gave clearly better results on a real library;
@@ -89,6 +112,16 @@ similar_min_score = 0
 enabled = true
 remote = "iclouddrive:PrimarySync/All Photos"
 root = "icloud"
+# More remotes, each into a library root of its own (root = remote), copied
+# one after the other. iCloud's Shared Library is one: the photos with the
+# two-person badge. `rclone lsf --dirs-only iclouddrive:` lists it as
+# SharedSync-<id>. It needs its own folder in [library] roots, because its
+# file names clash with the main library's; meerpic refuses a shared one:
+#   remotes = { shared = "iclouddrive:SharedSync-<id>/All Photos" }
+remotes = {}
+# Gigabytes a sync leaves free on the disk. It stops there and says so, and
+# the next sync carries on (after the offload made room). 0 = no limit.
+keep_free = 10
 # Extra rclone arguments, e.g. ["--transfers", "8"].
 args = []
 # Minutes between automatic syncs; 0 = only when asked.

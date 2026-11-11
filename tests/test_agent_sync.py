@@ -13,10 +13,18 @@ import os
 import sys
 import textwrap
 import time
+from collections import namedtuple
 from datetime import timedelta
 
 import pytest
-from agent_helpers import local_remote, needs_db, needs_rclone, use_db, use_library
+from agent_helpers import (
+    local_remote,
+    needs_db,
+    needs_rclone,
+    shared_library,
+    use_db,
+    use_library,
+)
 
 from agent import jobs, sync
 from core.config import Settings, get_settings
@@ -360,3 +368,189 @@ def test_nothing_deleted_means_no_exclude_file(db, lib, tmp_path, monkeypatch):
     run, _, argv_file = run_sync(tmp_path, monkeypatch, [STATS_DONE])
     assert run.run() == "done"
     assert "--exclude-from" not in json.loads(argv_file.read_text())
+
+
+# --- more than one remote ([sync] remotes), and the room on the disk ------------------
+
+
+def fake_rclones(tmp_path, runs: dict[str, tuple[int, list[str]]]):
+    """An rclone for several copies in one job: appends each argv to a file,
+    and for the first ``runs`` key its source contains, replays those lines
+    and exits with that status (no lines and 0 otherwise)."""
+    script = tmp_path / "rclone"
+    argv_log = tmp_path / "argv.jsonl"
+    script.write_text(textwrap.dedent(f"""\
+        #!{sys.executable}
+        import json, sys
+        with open({str(argv_log)!r}, "a") as fh:
+            fh.write(json.dumps(sys.argv[1:]) + "\\n")
+        code, lines = next((v for k, v in {runs!r}.items() if k in sys.argv[2]), (0, []))
+        for line in lines:
+            print(line, file=sys.stderr, flush=True)
+        sys.exit(code)
+        """))
+    script.chmod(0o755)
+    return str(script), argv_log
+
+
+def calls(argv_log) -> list[list[str]]:
+    if not argv_log.exists():
+        return []
+    return [json.loads(line) for line in argv_log.read_text().splitlines()]
+
+
+Usage = namedtuple("Usage", "total used free")
+
+
+def test_argv_for_another_root_with_a_limit(lib, tmp_path, monkeypatch):
+    shared, folder = shared_library(tmp_path, monkeypatch)
+    s = get_settings()
+    monkeypatch.setattr(s, "rclone", "rclone")
+    argv = sync.build_argv(s, root="shared", max_transfer=1000)
+    assert argv[:4] == ["rclone", "copy", str(shared), str(folder)]
+    assert argv[argv.index("--max-transfer") + 1] == "1000B"        # a bare 1000 is KiB to rclone
+    assert argv[argv.index("--cutoff-mode") + 1] == "cautious"
+    assert "--max-transfer" not in sync.build_argv(s)
+
+
+def test_room_is_what_is_free_above_keep_free(lib, tmp_path, monkeypatch):
+    s = get_settings()
+    asked = []
+    monkeypatch.setattr(sync.shutil, "disk_usage", lambda path: asked.append(path) or Usage(0, 0, 30 * 10**9))
+    assert sync.room(s, "icloud") is None                     # keep_free = 0: no limit
+    monkeypatch.setattr(s, "sync_keep_free", 10)
+    assert sync.room(s, "icloud") == 20 * 10**9
+    # The first copy makes the root; until then it is its parent's disk.
+    monkeypatch.setattr(s, "library_roots", {"icloud": str(tmp_path / "not" / "yet")})
+    assert sync.room(s, "icloud") == 20 * 10**9
+    assert asked[-1] == tmp_path
+    # A --max-transfer of the user's own is theirs to keep.
+    monkeypatch.setattr(s, "sync_args", ["--max-transfer=5G"])
+    assert sync.room(s, "icloud") is None
+
+
+@needs_db
+@needs_rclone
+def test_every_remote_is_copied_into_a_root_of_its_own(db, lib, tmp_path, monkeypatch):
+    """The real rclone, from two local folders standing in for iCloud's
+    library and its Shared Library, which reuse each other's names."""
+    main = local_remote(tmp_path, monkeypatch)
+    shared, folder = shared_library(tmp_path, monkeypatch)
+    (main / "IMG_1.HEIC").write_bytes(b"mine")
+    (main / "gone.HEIC").write_bytes(b"mine too")
+    (shared / "IMG_1.HEIC").write_bytes(b"theirs, another photo")
+    (shared / "IMG_2.HEIC").write_bytes(b"2")
+    (shared / "gone.HEIC").write_bytes(b"g")
+    # Deleted from the Shared Library here: left out there, and only there.
+    db.add(DeletedFile(root="shared", name="gone.HEIC", size=1, mtime_ns=1, sha256="0" * 64))
+    db.commit()
+    job = jobs.create("sync", running=True)
+    assert sync.SyncRun(job.id, get_settings()).run() == "done"
+    assert sorted(p.name for p in lib.iterdir()) == ["IMG_1.HEIC", "gone.HEIC"]
+    assert sorted(p.name for p in folder.iterdir()) == ["IMG_1.HEIC", "IMG_2.HEIC"]
+    assert (lib / "IMG_1.HEIC").read_bytes() == b"mine"
+    assert (folder / "IMG_1.HEIC").read_bytes() == b"theirs, another photo"
+    j = load(db, job.id)
+    assert j.message == "4 new photos"
+    assert f"copying {shared} into shared (2/2)" in j.log
+    assert "leaving out 1 file(s) deleted here" in j.log
+    assert (j.progress["copied"], j.progress["source"], j.progress["steps"]) == (4, "shared", 2)
+
+
+@needs_db
+def test_a_second_remote_that_fails_fails_the_sync_and_names_itself(db, lib, tmp_path, monkeypatch):
+    shared, _ = shared_library(tmp_path, monkeypatch)
+    script, argv_log = fake_rclones(tmp_path, {"shared-remote": (1, NO_SOURCE), "": (0, [COPIED])})
+    monkeypatch.setattr(get_settings(), "rclone", script)
+    job = jobs.create("sync", running=True)
+    assert sync.SyncRun(job.id, get_settings()).run() == "failed"
+    j = load(db, job.id)
+    assert j.error == f"{shared}: Failed to copy: directory not found"
+    assert j.progress["copied"] == 1                            # the first one's
+    assert [argv[1] for argv in calls(argv_log)] == ["iclouddrive:PrimarySync/All Photos", str(shared)]
+
+
+@needs_db
+def test_an_expired_session_on_the_second_remote_is_still_just_the_hint(db, lib, tmp_path, monkeypatch):
+    shared_library(tmp_path, monkeypatch)
+    script, _ = fake_rclones(tmp_path, {"shared-remote": (1, [EXPIRED])})
+    monkeypatch.setattr(get_settings(), "rclone", script)
+    job = jobs.create("sync", running=True)
+    sync.SyncRun(job.id, get_settings()).run()
+    assert load(db, job.id).error.startswith("The iCloud session has expired.")
+
+
+@needs_db
+def test_no_room_means_no_copy_and_a_message_that_says_why(db, lib, tmp_path, monkeypatch):
+    s = get_settings()
+    script, argv_log = fake_rclones(tmp_path, {})
+    monkeypatch.setattr(s, "rclone", script)
+    monkeypatch.setattr(s, "sync_keep_free", 40)
+    monkeypatch.setattr(sync.shutil, "disk_usage", lambda path: Usage(0, 0, 30 * 10**9))
+    job = jobs.create("sync", running=True)
+    assert sync.SyncRun(job.id, s).run() == "done"
+    assert calls(argv_log) == []
+    assert load(db, job.id).message == ("Paused before copying anything: "
+                                        "the disk is down to 40 GB free (sync.keep_free)")
+
+
+@needs_db
+def test_a_copy_stops_where_the_room_ends_and_the_rest_waits(db, lib, tmp_path, monkeypatch):
+    """rclone ends a copy that reached --max-transfer with status 8, and
+    calls that errors; for the sync it is a pause, not a failure."""
+    s = get_settings()
+    shared_library(tmp_path, monkeypatch)
+    limit = ['{"level":"notice","msg":"max transfer limit reached as set by --max-transfer - stopping transfers"}',
+             '{"level":"error","msg":"Can\'t retry any of the errors - not attempting retries"}',
+             STATS_DONE]
+    script, argv_log = fake_rclones(tmp_path, {"PrimarySync": (8, [COPIED, *limit])})
+    monkeypatch.setattr(s, "rclone", script)
+    monkeypatch.setattr(s, "sync_keep_free", 10)
+    frees = iter([25 * 10**9, 9 * 10**9])                       # the first copy filled it
+    monkeypatch.setattr(sync.shutil, "disk_usage", lambda path: Usage(0, 0, next(frees)))
+    job = jobs.create("sync", running=True)
+    assert sync.SyncRun(job.id, s).run() == "done"
+    (argv,) = calls(argv_log)                                    # the Shared Library waits
+    assert argv[argv.index("--max-transfer") + 1] == f"{15 * 10**9}B"
+    j = load(db, job.id)
+    assert j.message == "1 new photo, then paused: the disk is down to 10 GB free (sync.keep_free)"
+    assert j.progress["errors"] == 0
+    assert "no room left for shared on its disk" in j.log
+
+
+@needs_db
+def test_a_full_disk_does_not_hold_up_a_root_on_another_one(db, lib, tmp_path, monkeypatch):
+    s = get_settings()
+    shared, folder = shared_library(tmp_path, monkeypatch)
+    script, argv_log = fake_rclones(tmp_path, {"shared-remote": (0, [COPIED])})
+    monkeypatch.setattr(s, "rclone", script)
+    monkeypatch.setattr(s, "sync_keep_free", 10)
+    disks = {str(lib): 5 * 10**9, str(folder): 100 * 10**9}
+    monkeypatch.setattr(sync.shutil, "disk_usage", lambda path: Usage(0, 0, disks[str(path)]))
+    job = jobs.create("sync", running=True)
+    assert sync.SyncRun(job.id, s).run() == "done"
+    (argv,) = calls(argv_log)
+    assert argv[1:3] == [str(shared), str(folder)]
+    assert argv[argv.index("--max-transfer") + 1] == f"{90 * 10**9}B"
+    j = load(db, job.id)
+    assert j.message.startswith("1 new photo, then paused")
+    assert "no room left for icloud on its disk" in j.log
+
+
+@needs_db
+@needs_rclone
+def test_the_real_rclone_stops_at_the_room_in_bytes(db, lib, tmp_path, monkeypatch):
+    """What rclone does with the limit, not what the argv says: one 8 MB file
+    fits in 10 MB of room, the second would not. Streamed the way a download
+    is (a local copy may otherwise skip rclone's accounting)."""
+    s = get_settings()
+    remote = local_remote(tmp_path, monkeypatch)
+    for name in ("a.HEIC", "b.HEIC", "c.HEIC"):
+        (remote / name).write_bytes(os.urandom(8 * 2**20))
+    monkeypatch.setattr(s, "sync_args", ["--transfers", "1", "--disable", "Copy", "--multi-thread-streams", "0"])
+    monkeypatch.setattr(s, "sync_keep_free", 0.001)              # 1 MB
+    monkeypatch.setattr(sync.shutil, "disk_usage", lambda path: Usage(0, 0, 11 * 10**6))
+    job = jobs.create("sync", running=True)
+    assert sync.SyncRun(job.id, s).run() == "done", load(db, job.id).error
+    assert len(list(lib.iterdir())) == 1
+    assert load(db, job.id).message.startswith("1 new photo, then paused")

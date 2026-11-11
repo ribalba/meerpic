@@ -25,6 +25,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from fastapi.responses import FileResponse, Response
 from sqlalchemy.orm import Session
 
+from core import roots
 from core.config import get_settings
 from core.database import get_db
 from core.media import (
@@ -37,6 +38,7 @@ from core.media import (
     thumb_path,
 )
 from core.models import Face, Photo
+from core.offloading import lowres_file, offloaded
 
 from .. import images
 from ..security import require_auth
@@ -82,9 +84,19 @@ def _photo(db: Session, photo_id: int) -> Photo:
     return photo
 
 
+OFFLOADED = "The original is in iCloud only; get it from the viewer first"
+AWAY = "The folder this photo is in is not reachable right now"
+
+
 def _original(photo: Photo) -> Path:
+    if photo.root in roots.offline():
+        # Not even a stat: on a share that went away it can hang for as long
+        # as the mount's timeout, and with it a thread of the server's pool.
+        raise HTTPException(503, AWAY)
     path = original_path(photo.root, photo.rel_path)
     if path is None or not path.is_file():
+        if offloaded(photo):
+            raise HTTPException(404, OFFLOADED)
         raise HTTPException(404, "The original file is not there")
     return path
 
@@ -157,6 +169,12 @@ def export(
     photo_id: int, db: DB, max_edge: Annotated[int, Query(alias="max")] = 0
 ) -> Response:
     photo = _photo(db, photo_id)
+    if photo.kind == "video" and offloaded(photo):
+        # All there is of it here: its small copy, under its own name.
+        small = lowres_file(photo)
+        if small is None:
+            raise HTTPException(404, OFFLOADED)
+        return _file(small, "video/mp4", REVALIDATE, content_disposition(stem(photo.name) + ".mp4"))
     path = _original(photo)
     if photo.kind == "video":
         _, direct = export_plan(photo)
@@ -197,6 +215,17 @@ def preview(photo_id: int, db: DB, v: str | None = None) -> Response:
     # FileResponse answers Range requests itself, which is what lets a
     # <video> seek without downloading the whole file first.
     return _file(preview_path(photo.sig), "video/mp4", _keyed(v, photo))
+
+
+@router.get("/lowres/{photo_id}")
+def lowres(photo_id: int, db: DB, v: str | None = None) -> Response:
+    """The small copy a video old enough to be offloaded keeps (see
+    core/offloading.py). Range requests, like the preview."""
+    photo = _photo(db, photo_id)
+    small = lowres_file(photo)
+    if small is None:
+        raise HTTPException(404, "No small copy")
+    return _file(small, "video/mp4", _keyed(v, photo))
 
 
 @router.get("/story/{photo_id}")

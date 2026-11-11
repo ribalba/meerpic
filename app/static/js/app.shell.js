@@ -24,6 +24,8 @@ App.shell = (() => {
       title: "is:whatsapp: the WhatsApp album", when: (c) => Number(c.whatsapp) > 0 },
     { q: "is:saved", label: "Saved from apps", icon: "inbox", count: "saved",
       title: "is:saved: pictures an app or a browser saved, rather than a camera took" },
+    { q: "is:shared", label: "Shared Library", icon: "people", count: "shared",
+      title: "is:shared: iCloud's Shared Library", when: (c) => Number(c.shared) > 0 },
     { q: "is:nsfw", label: "Possibly NSFW", icon: "eyeOff", count: "nsfw",
       title: "is:nsfw: flagged by the image classifier, most certain first", when: () => Boolean(App.state.nsfw && App.state.nsfw.enabled) },
   ];
@@ -41,6 +43,7 @@ App.shell = (() => {
   let lastRefresh = 0;
   let lastTotal = null;
   let lastLatest = null;
+  let lastOffline = null;
 
   const located = (c) => c && c.lat !== null && c.lat !== undefined && c.lon !== null && c.lon !== undefined;
 
@@ -404,6 +407,15 @@ App.shell = (() => {
     if ((lastTotal !== null && total !== lastTotal) || (lastLatest !== null && latest !== lastLatest)) refreshLibrary();
     lastTotal = total;
     lastLatest = latest;
+    // A library folder went away or came back (a network share away from
+    // home): its photos leave or rejoin everything on screen at once.
+    const offline = (s.offline || []).map((o) => o.root).join("\n");
+    if (lastOffline !== null && offline !== lastOffline) {
+      App.grid.load({ keepFocus: true });
+      if (App.map.isShown()) App.map.refresh();
+      refreshLibrary(true);
+    }
+    lastOffline = offline;
   }
 
   // --- the narrow-layout drawer -----------------------------------------------------

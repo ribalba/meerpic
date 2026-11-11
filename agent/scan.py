@@ -16,11 +16,19 @@ nothing**. A disk that is not mounted, a network share that timed out, a
 container started without its bind mount: each looks exactly like a library
 whose every photo was deleted, and treating it that way would throw away an
 index that took an hour to build. A directory that cannot be read keeps the
-rows under it for the same reason.
+rows under it for the same reason. A root whose folder is not there at all
+(core/roots.py) is not even walked, and its photos are out of the grid until
+it is back.
 
 A new file that is a photo deleted here, back from iCloud under another name
 (or from an ``rclone copy`` run by hand), is not indexed: it goes back to the
 trash (agent/delete.py, ``returned``).
+
+An offloaded video (agent/offload.py) is meant to have no file here, and
+its row stays. The offload marks the row before it deletes the file, and the
+deletion here checks the mark again in the same statement, so a scan that
+read the rows a moment before the mark still cannot take the video for a
+deleted one.
 """
 
 from __future__ import annotations
@@ -30,9 +38,10 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
-from sqlalchemy import delete, insert, select, update
+from sqlalchemy import delete, func, insert, select, update
 from sqlalchemy.orm import Session
 
+from core import roots
 from core.config import Settings, get_settings
 from core.media import classify, make_sig
 from core.models import UNDATED, Photo
@@ -131,7 +140,7 @@ def scan_root(db: Session, name: str, root: Path, zone: ZoneInfo,
         row.rel_path: row
         for row in db.execute(
             select(Photo.id, Photo.root, Photo.rel_path, Photo.name, Photo.size, Photo.mtime_ns,
-                   Photo.content_id)
+                   Photo.content_id, Photo.offloaded_at)
             .where(Photo.root == name)
         ).all()
     }
@@ -173,11 +182,13 @@ def scan_root(db: Session, name: str, root: Path, zone: ZoneInfo,
             })
         elif row.size != size or row.mtime_ns != mtime_ns:
             # A new sig makes every stage pending again (see core/models);
-            # the old failures were about the old file.
+            # the old failures were about the old file. An offloaded video
+            # whose place another file took is that file now, and here.
             changed.append({
                 "id": row.id, "size": size, "mtime_ns": mtime_ns,
                 "sig": make_sig(name, rel, size, mtime_ns),
                 "error_stage": "", "error": "", "fail_count": 0, "updated_at": now,
+                "offloaded_at": None,
             })
     if fresh:
         db.execute(insert(Photo), fresh)
@@ -186,7 +197,7 @@ def scan_root(db: Session, name: str, root: Path, zone: ZoneInfo,
         db.execute(update(Photo), changed)      # bulk UPDATE by primary key
         result.changed = len(changed)
 
-    gone = [row for rel, row in known.items() if rel not in found.files]
+    gone = [row for rel, row in known.items() if rel not in found.files and row.offloaded_at is None]
     if found.unreadable:
         keep = [row for row in gone if _under(row.rel_path, found.unreadable)]
         if keep:
@@ -196,7 +207,13 @@ def scan_root(db: Session, name: str, root: Path, zone: ZoneInfo,
             )
             gone = [row for row in gone if not _under(row.rel_path, found.unreadable)]
     if gone:
-        db.execute(delete(Photo).where(Photo.id.in_([row.id for row in gone])))
+        removed = set(db.scalars(
+            delete(Photo)
+            .where(Photo.id.in_([row.id for row in gone]), Photo.offloaded_at.is_(None))
+            .returning(Photo.id)
+        ))
+        gone = [row for row in gone if row.id in removed]
+    if gone:
         # A deleted still frees its video, and a deleted video its still; a
         # deleted edit its original (the foreign key already did), which
         # another edit of the same name may now claim.
@@ -206,14 +223,42 @@ def scan_root(db: Session, name: str, root: Path, zone: ZoneInfo,
     return result
 
 
+def not_there(db: Session, name: str, root: Path) -> ScanResult:
+    """A root whose folder is not there (core/roots.py): nothing is walked,
+    which on a share that went away could hang, and nothing is deleted."""
+    n = db.scalar(select(func.count()).select_from(Photo).where(Photo.root == name)) or 0
+    result = ScanResult(kept=n)
+    result.warnings.append(
+        f"scan {name}: {root} is not reachable; keeping its {n} photo(s), out of the grid until it is back"
+    )
+    return result
+
+
+# The roots that were not there at the last scan. A share away from home is
+# an ordinary state, so it is said once when it goes and once when it is back
+# rather than every minute.
+_away: set[str] = set()
+
+
 def scan(db: Session, settings: Settings) -> ScanResult:
     """Scan every configured root. Commits."""
     zone = home_zone(settings.timezone)
     total = ScanResult()
+    away = roots.offline(settings, fresh=True)
     for name, root in settings.roots.items():
-        result = scan_root(db, name, root, zone, settings)
-        db.commit()
-        for warning in result.warnings:
-            log(warning, error=True)
+        if name in away:
+            result = not_there(db, name, root)
+            if name not in _away:
+                _away.add(name)
+                for warning in result.warnings:
+                    log(warning)
+        else:
+            if name in _away:
+                _away.discard(name)
+                log(f"scan {name}: {root} is back")
+            result = scan_root(db, name, root, zone, settings)
+            db.commit()
+            for warning in result.warnings:
+                log(warning, error=True)
         total.add(result)
     return total

@@ -50,16 +50,17 @@ from sqlalchemy.orm import Session
 
 from core.config import Settings
 from core.database import SessionLocal
-from core.deletion import Group, Plan, Step, in_icloud
+from core.deletion import Group, Plan, Step, in_icloud, local_file
 from core.media import (
     display_path,
-    original_path,
+    lowres_path,
     preview_path,
     story_path,
     thumb_path,
     trash_path,
 )
 from core.models import DeletedFile, Photo
+from core.offloading import offloaded
 from core.timeutil import home_zone, utc_to_wall, utcnow
 
 from . import edits, jobs, live
@@ -151,7 +152,7 @@ def _inside(path: Path, folder: Path) -> bool:
 
 def check_step(settings: Settings, step: Step, row) -> None:
     """Refuse a step that is not what a plan from core/deletion.py can hold."""
-    here = original_path(row.root, row.rel_path)
+    here = local_file(row)
     trash = trash_path(row.root)
     if here is None or trash is None:
         raise DeleteError(f"library root {row.root!r} is not configured")
@@ -196,12 +197,13 @@ def returned(db: Session, settings: Settings, name: str, root: Path,
     by hand excludes nothing. A new file at the top of the sync root with the
     size and content of a deleted one is that photo again: it goes to the
     trash too, and its note takes the new name, so the next sync skips it.
+    The same at the top of every root a remote is copied into.
     Unless the note's own trash copy is gone: then the file was moved back
     out of the trash by hand, which undoes the delete, and the note goes.
 
     Changes notes in ``db``; the scan commits them.
     """
-    if name != settings.sync_root or not files:
+    if name not in settings.sync_sources or not files:
         return set()
     by_size: dict[int, list[DeletedFile]] = defaultdict(list)
     for note in db.scalars(select(DeletedFile).where(
@@ -308,9 +310,15 @@ class DeleteRun:
             check_step(self.settings, step, rows[step.photo_id])
 
         # The note is of the file as it is now, read before anything moves.
+        # Of an offloaded video, of its original as the row knew it: the
+        # small copy that moves is not what iCloud would send again.
         notes: list[tuple[Step, int, int, str | None]] = []
         for step in steps:
             if step.excluded is None:
+                continue
+            row = rows[step.photo_id]
+            if offloaded(row):
+                notes.append((step, row.size, row.mtime_ns, None))
                 continue
             path = Path(step.local)
             try:
@@ -324,6 +332,8 @@ class DeleteRun:
         moved: list[tuple[Path, Path]] = []
         doomed = [rows[step.photo_id] for step in steps]
         sigs = [row.sig for row in doomed]
+        # A video's small copy, unless it was the file that moved.
+        smalls = [lowres_path(row.root, row.name, row.sig) for row in doomed]
         try:
             for step in steps:
                 dest = move(step)
@@ -351,6 +361,9 @@ class DeleteRun:
             raise
         for sig in sigs:
             for path in (thumb_path(sig), preview_path(sig), story_path(sig), display_path(sig)):
+                _unlink(path)
+        for path in smalls:
+            if path is not None:
                 _unlink(path)
         return len(moved)
 

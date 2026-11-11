@@ -25,6 +25,7 @@ from agent_helpers import (
     local_remote,
     needs_db,
     needs_rclone,
+    shared_library,
     use_db,
     use_library,
 )
@@ -32,6 +33,7 @@ from sqlalchemy import select
 
 from agent import albums, jobs
 from core.config import get_settings
+from core.media import make_sig
 from core.models import Album, DeletedFile, Job, Photo, PhotoAlbum
 from core.timeutil import utcnow
 
@@ -384,3 +386,65 @@ def test_real_rclone_over_a_local_tree(db, lib, tmp_path, monkeypatch):
     counts = {x.name: (x.count, x.remote_count) for x in db.scalars(select(Album))}
     assert counts == {"All Photos": (2, 2), "Favorites": (1, 1)}
     assert ROOT == get_settings().sync_root
+
+
+# --- the Shared Library: a second remote with albums of its own ------------------------
+
+
+@needs_db
+def test_each_root_is_matched_against_its_own_files_only(db, lib, tmp_path, monkeypatch):
+    """Both libraries have an IMG_1.HEIC, and they are two photos: the
+    Shared Library's heart must not land on the other one."""
+    shared_library(tmp_path, monkeypatch)
+    mine = photo(db, "IMG_1.HEIC", 10)
+    theirs = photo(db, "IMG_1.HEIC", 77, root="shared", sig=make_sig("shared", "IMG_1.HEIC", 77, 1))
+    db.add_all([
+        DeletedFile(root="shared", name="IMG_9.HEIC", size=5, mtime_ns=1, sha256="0" * 64),
+        DeletedFile(root=ROOT, name="IMG_9.HEIC", size=5, mtime_ns=1, sha256="1" * 64),
+    ])
+    db.commit()
+    E = albums.Entry
+    out = albums.apply_all(db, get_settings(), {
+        ROOT: {"All Photos": [E("IMG_1.HEIC", 10, MTIME)], "Favorites": []},
+        "shared": {"All Photos": [E("IMG_1.HEIC", 77, MTIME), E("IMG_9.HEIC", 6, MTIME + 99)],
+                   "Favorites": [E("IMG_1.HEIC", 77, MTIME)]},
+    })
+    assert (out.listed["All Photos"], out.matched["All Photos"]) == (3, 2)
+    assert out.released == 1                       # the Shared Library's IMG_9 is another photo now
+    db.expire_all()
+    assert db.get(Photo, theirs.id).favorite and not db.get(Photo, mine.id).favorite
+    counts = {a.name: (a.count, a.remote_count) for a in db.scalars(select(Album))}
+    assert counts == {"All Photos": (2, 3), "Favorites": (1, 1)}
+    names = {n.root: n.name for n in db.scalars(select(DeletedFile))}
+    assert names == {"shared": None, ROOT: "IMG_9.HEIC"}
+
+
+@needs_db
+@needs_rclone
+def test_real_rclone_reads_the_albums_of_both_libraries(db, lib, tmp_path, monkeypatch):
+    main = local_remote(tmp_path, monkeypatch)
+    shared, _ = shared_library(tmp_path, monkeypatch)
+    hidden = shared.parent / "Hidden"
+    hidden.mkdir()
+    for folder, name, data in ((main, "a.jpg", b"aaaa"), (shared, "a.jpg", b"theirs"),
+                               (hidden, "a.jpg", b"theirs")):
+        (folder / name).write_bytes(data)
+        os.utime(folder / name, (MTIME, MTIME))
+    mine = photo(db, "a.jpg", 4)
+    theirs = photo(db, "a.jpg", 6, root="shared", sig=make_sig("shared", "a.jpg", 6, 1))
+    j = jobs.create("albums", running=True)
+    run = albums.AlbumsRun(j.id, get_settings())
+    assert run.run() == "done", job(db, j.id).error
+    db.expire_all()
+    assert db.get(Photo, theirs.id).hidden and not db.get(Photo, mine.id).hidden
+    assert {root: sorted(found) for root, found in run.listings.items()} == {
+        ROOT: ["All Photos"], "shared": ["All Photos", "Hidden"],
+    }
+    assert job(db, j.id).progress == {"albums": 3, "done": 3, "current": ""}
+
+
+def test_the_one_remote_apply_refuses_a_second_remote(lib, tmp_path, monkeypatch):
+    """It rebuilds every root's membership from one root's listing."""
+    shared_library(tmp_path, monkeypatch)
+    with pytest.raises(ValueError, match="apply_all"):
+        albums.apply(None, get_settings(), {})

@@ -8,6 +8,10 @@ on; three failures park the row until the file changes (the scan resets the
 count with the sig) or a reindex clears it. A stage that succeeds clears
 the failure only if it was its own: a video whose preview failed keeps
 saying so after its thumbnail is redrawn.
+
+A library folder that is not there (core/roots.py) has no work picked from
+it, and a file whose folder went away under a stage, a share dropping in the
+middle of a batch, did not fail: nothing is recorded against it.
 """
 
 from __future__ import annotations
@@ -18,6 +22,7 @@ from collections.abc import Iterable
 from sqlalchemy import ColumnElement, Select, select, update
 from sqlalchemy.orm import Session
 
+from core import roots
 from core.models import Photo
 from core.timeutil import utcnow
 
@@ -31,10 +36,11 @@ def newest(
     exclude: Iterable[int] = (),
     first: ColumnElement[bool] | None = None,
 ) -> Select:
-    """Newest first, parked rows left out, optionally within ``only_ids`` and
-    without ``exclude`` (rows cooling down after a failure). ``first`` puts
-    the rows it is true for ahead of the rest, each part newest first."""
-    query = query.where(Photo.fail_count < MAX_FAILS)
+    """Newest first, parked rows and folders that are away left out,
+    optionally within ``only_ids`` and without ``exclude`` (rows cooling down
+    after a failure). ``first`` puts the rows it is true for ahead of the
+    rest, each part newest first."""
+    query = query.where(Photo.fail_count < MAX_FAILS, *roots.reachable())
     if only_ids is not None:
         query = query.where(Photo.id.in_(only_ids) if only_ids else Photo.id < 0)
     skip = list(exclude)
@@ -88,10 +94,13 @@ def short(exc: BaseException | str, limit: int = 500) -> str:
 
 def failed(db: Session, photo_id: int, sig: str, stage: str, error: BaseException | str) -> None:
     """Record one failure. Only for the version of the file that failed: a
-    file replaced meanwhile starts with a clean slate."""
+    file replaced meanwhile starts with a clean slate. And only if its
+    folder is still there, asked anew: one that just went away is why."""
+    away = roots.offline(fresh=True)
     db.execute(
         update(Photo)
-        .where(Photo.id == photo_id, Photo.sig == sig)
+        .where(Photo.id == photo_id, Photo.sig == sig,
+               *([Photo.root.not_in(sorted(away))] if away else []))
         .values(error_stage=stage, error=short(error), fail_count=Photo.fail_count + 1,
                 updated_at=utcnow())
     )
@@ -113,5 +122,5 @@ def base_columns() -> Select:
     return select(
         Photo.id, Photo.root, Photo.rel_path, Photo.name, Photo.ext, Photo.kind,
         Photo.sig, Photo.mtime_ns, Photo.content_id, Photo.duration, Photo.video_codec,
-        Photo.is_companion, Photo.live_video_id,
+        Photo.is_companion, Photo.live_video_id, Photo.lowres_sig, Photo.offloaded_at,
     )

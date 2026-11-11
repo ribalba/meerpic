@@ -21,6 +21,11 @@ A stage only takes files the previous one has finished with (thumbnails
 need the metadata's duration and codec, embeddings and storyboards need the
 thumbnail, a video's NSFW score its storyboard), and never stops for one
 file: a failure is recorded on the row, see agent/stages.py.
+
+An offloaded video (core/offloading.py) has no original here. Everything was
+read from it before it went, so nothing is pending for it; after a reindex,
+frames come from its small copy, and its metadata is left as it was (the
+small copy carries none of the camera's).
 """
 
 from __future__ import annotations
@@ -36,10 +41,11 @@ from concurrent.futures.process import BrokenProcessPool
 from sqlalchemy import and_, exists, func, select, update
 from sqlalchemy.orm import Session
 
-from core import embed
+from core import embed, roots
 from core.config import Settings
 from core.media import original_path, story_path, thumb_path
 from core.models import Photo, PhotoEmbedding
+from core.offloading import due, not_due, source_path
 from core.timeutil import home_zone, utcnow
 
 from . import (
@@ -125,7 +131,7 @@ class Pipeline:
 
     def meta_batch(self, db: Session) -> int:
         todo = db.execute(stages.newest(
-            stages.base_columns().where(Photo.meta_sig != Photo.sig),
+            stages.base_columns().where(Photo.meta_sig != Photo.sig, Photo.offloaded_at.is_(None)),
             self.only_ids, META_BATCH, self.cooldown.ids(),
         )).all()
         if not todo:
@@ -207,7 +213,7 @@ class Pipeline:
         tasks, rows = [], {}
         errors: Counter = Counter()
         for row in todo:
-            src = original_path(row.root, row.rel_path)
+            src = source_path(row)
             if src is None:
                 self._fail(db, row, "thumbs", f"library root {row.root!r} is not configured")
                 continue
@@ -328,7 +334,7 @@ class Pipeline:
         tasks, rows = [], {}
         errors: Counter = Counter()
         for row in todo:
-            src = original_path(row.root, row.rel_path)
+            src = source_path(row)
             if src is None:
                 self._fail(db, row, "story", f"library root {row.root!r} is not configured")
                 continue
@@ -492,10 +498,11 @@ def pending(db: Session, settings: Settings) -> dict:
     ))
     visible = Photo.is_companion.is_(False)
     row = db.execute(select(
-        func.count().filter(live_rows, Photo.meta_sig != Photo.sig),
+        func.count().filter(live_rows, Photo.meta_sig != Photo.sig, Photo.offloaded_at.is_(None)),
         func.count().filter(live_rows, Photo.thumb_sig != Photo.sig),
         func.count().filter(live_rows, visible, ~has_vec),
-        func.count().filter(live_rows, Photo.kind == "video", Photo.preview_sig != Photo.sig),
+        func.count().filter(live_rows, Photo.kind == "video", Photo.preview_sig != Photo.sig,
+                            not_due(settings), Photo.offloaded_at.is_(None)),
         func.count().filter(Photo.fail_count >= stages.MAX_FAILS),
         func.count().filter(live_rows, visible, Photo.kind == "video", Photo.story_sig != Photo.sig),
         func.count().filter(live_rows, visible, Photo.nsfw_sig != Photo.sig),
@@ -503,7 +510,9 @@ def pending(db: Session, settings: Settings) -> dict:
                             Photo.faces_sig != Photo.sig),
         func.count().filter(live_rows, visible, Photo.superseded_by.is_(None), Photo.ocr_sig != Photo.sig,
                             *(() if settings.ocr_videos else (Photo.kind == "photo",))),
-    )).one()
+        func.count().filter(live_rows, *due(settings), Photo.lowres_sig != Photo.sig,
+                            Photo.offloaded_at.is_(None)),
+    ).where(*roots.reachable(settings))).one()     # a folder that is away waits for it
     return {
         "meta": row[0],
         "thumbs": row[1],
@@ -513,5 +522,6 @@ def pending(db: Session, settings: Settings) -> dict:
         "nsfw": row[6] if settings.nsfw_enabled else 0,
         "faces": row[7] if settings.faces_enabled else 0,
         "ocr": row[8] if settings.ocr_enabled else 0,
+        "lowres": row[9],
         "failed": row[4],
     }

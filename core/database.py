@@ -123,6 +123,9 @@ _COLUMNS = (
     ("nsfw_sig", "VARCHAR(16) NOT NULL DEFAULT ''"),
     ("faces_sig", "VARCHAR(16) NOT NULL DEFAULT ''"),
     ("ocr_sig", "VARCHAR(16) NOT NULL DEFAULT ''"),
+    ("lowres_sig", "VARCHAR(16) NOT NULL DEFAULT ''"),
+    ("offloaded_at", "TIMESTAMP"),
+    ("fetched_at", "TIMESTAMP"),
 )
 
 # When a migration does have to run, it waits this long for the table and

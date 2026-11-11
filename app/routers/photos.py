@@ -28,8 +28,10 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import Integer, case, cast, func, select, tuple_
 from sqlalchemy.orm import Session
 
+from core.config import get_settings
 from core.database import get_db
 from core.models import UNDATED, Album, Face, Job, Photo, PhotoAlbum, PhotoText
+from core.offloading import from_remote, offloaded
 
 from ..query import (
     QuerySpec,
@@ -47,6 +49,7 @@ from ..serialize import card_json, detail_json, face_url, preview_ready, preview
 
 router = APIRouter(prefix="/api", tags=["photos"], dependencies=[Depends(require_auth)])
 DB = Annotated[Session, Depends(get_db)]
+settings = get_settings()
 
 DEFAULT_LIMIT = 150
 MAX_LIMIT = 500
@@ -54,6 +57,7 @@ MAX_LIMIT = 500
 # Two-key advisory locks (see /api/sync for the other): one class per kind of
 # "enqueue unless one is already queued", keyed by the photo within it.
 LOCK_PREVIEW = 0x6D72_7031   # "mrp1"
+LOCK_FETCH = 0x6D72_7032     # "mrp2"
 
 
 # --- cursors ------------------------------------------------------------------
@@ -338,25 +342,50 @@ def request_preview(db: DB, photo_id: int) -> dict:
         raise HTTPException(400, "This is a still photo: there is no motion to prepare")
     if preview_ready(target):
         return {"ready": True, "url": preview_url(target)}
+    if offloaded(target):
+        raise HTTPException(409, "The original is in iCloud only: get it first")
+    return {"ready": False, "job_id": _enqueue_for(db, "preview", LOCK_PREVIEW, target.id).id}
 
-    # Serialise "is there one already, else make one" per video, so that a
-    # double click or two open windows cannot queue the same ffmpeg twice.
-    db.execute(select(func.pg_advisory_xact_lock(cast(LOCK_PREVIEW, Integer), cast(target.id, Integer))))
+
+def _enqueue_for(db: Session, kind: str, lock: int, photo_id: int) -> Job:
+    """The queued or running job of this kind for this photo, or a new one.
+
+    Serialised per photo, so that a double click or two open windows cannot
+    queue the same ffmpeg or the same download twice.
+    """
+    db.execute(select(func.pg_advisory_xact_lock(cast(lock, Integer), cast(photo_id, Integer))))
     existing = db.execute(
         select(Job)
         .where(
-            Job.kind == "preview",
+            Job.kind == kind,
             Job.status.in_(("queued", "running")),
-            Job.params["photo_id"].astext == str(target.id),
+            Job.params["photo_id"].astext == str(photo_id),
         )
         .order_by(Job.id)
         .limit(1)
     ).scalar()
     if existing is None:
-        existing = Job(kind="preview", params={"photo_id": target.id})
+        existing = Job(kind=kind, params={"photo_id": photo_id})
         db.add(existing)
     db.commit()
-    return {"ready": False, "job_id": existing.id}
+    return existing
+
+
+@router.post("/photos/{photo_id}/fetch")
+def fetch_original(db: DB, photo_id: int) -> dict:
+    """Download an offloaded video's original from iCloud again (see
+    core/offloading.py). The agent then makes its playable copy, and the
+    original stays ``offload.keep_fetched`` days. Asking while a download is
+    queued or running returns that one."""
+    photo = get_photo(db, photo_id)
+    if photo.kind != "video":
+        raise HTTPException(400, "Only videos are offloaded")
+    if not offloaded(photo):
+        return {"ready": True}
+    if not from_remote(photo, settings):
+        raise HTTPException(409, "This video is no longer in iCloud under its name; only its small copy is left")
+    job = _enqueue_for(db, "fetch", LOCK_FETCH, photo.id)
+    return {"ready": False, "job_id": job.id, "status": job.status}
 
 
 # --- the timeline -------------------------------------------------------------

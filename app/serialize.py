@@ -21,6 +21,7 @@ from datetime import datetime
 from core.config import get_settings
 from core.media import original_path, preview_path
 from core.models import Face, Job, Photo, PhotoText
+from core.offloading import from_remote, lowres_file, offloaded
 from core.timeutil import home_zone
 
 settings = get_settings()
@@ -78,11 +79,20 @@ def preview_url(p: Photo) -> str:
     return f"/media/preview/{p.id}?v={p.sig}"
 
 
+def lowres_url(p: Photo) -> str:
+    return f"/media/lowres/{p.id}?v={p.sig}"
+
+
 def hover_preview_url(p: Photo) -> str | None:
     """A video tile's preview for playing on hover. Trusts ``preview_sig``,
-    like thumb_url and for the same reason: it is asked for every tile."""
-    if p.kind == "video" and p.preview_sig and p.preview_sig == p.sig:
+    like thumb_url and for the same reason: it is asked for every tile. A
+    video old enough to be offloaded plays its small copy."""
+    if p.kind != "video":
+        return None
+    if p.preview_sig and p.preview_sig == p.sig:
         return preview_url(p)
+    if p.lowres_sig and p.lowres_sig == p.sig:
+        return lowres_url(p)
     return None
 
 
@@ -122,6 +132,10 @@ def export_plan(p: Photo) -> tuple[str, bool]:
     """
     tweaked = _share_changes_things()
     if p.kind == "video":
+        # Offloaded: the small copy is what there is (trusts the row, as
+        # thumb_url does; the export itself looks at the disk).
+        if p.offloaded_at is not None and p.lowres_sig and p.lowres_sig == p.sig:
+            return stem(p.name) + ".mp4", False
         if p.ext == "mp4" and p.video_codec == "h264" and not tweaked:
             return p.name, True
         # Trusts preview_sig for the same reason as thumb_url.
@@ -147,7 +161,10 @@ def card_json(p: Photo, score: float | None = None, edited: bool = False,
     likewise whether it looks just like a photo marked safe, and so is not
     flagged although the classifier would flag it.
     """
-    path = original_path(p.root, p.rel_path)
+    # An offloaded original is not on this disk; nothing should be dragged
+    # from where it was.
+    is_offloaded = p.kind == "video" and p.offloaded_at is not None
+    path = None if is_offloaded else original_path(p.root, p.rel_path)
     export_name, export_direct = export_plan(p)
     out = {
         "id": p.id,
@@ -178,6 +195,7 @@ def card_json(p: Photo, score: float | None = None, edited: bool = False,
         "preview": hover_preview_url(p),
         "story": story_url(p),
         "story_frames": p.story_frames,
+        "offloaded": is_offloaded,
     }
     if score is not None:
         out["score"] = round(float(score), 4)
@@ -237,6 +255,16 @@ def detail_json(p: Photo, live: Photo | None = None, albums: list[str] | None = 
     thumb = out["thumb"]
     video = preview_url(p) if preview_ready(p) else None
     motion = preview_url(live) if preview_ready(live) else None
+    small = lowres_file(p)
+    # The row's word, checked against the disk: the agent marks a row just
+    # before it deletes the file, and a fetched original is back before the
+    # mark is cleared.
+    is_offloaded = offloaded(p)
+    out["offloaded"] = is_offloaded
+    if not is_offloaded and out["path"] is None:
+        # Back on the disk before the agent cleared the mark.
+        path = original_path(p.root, p.rel_path)
+        out["path"] = str(path) if path else None
     out.update({
         "root": p.root,
         "rel_path": p.rel_path,
@@ -273,8 +301,17 @@ def detail_json(p: Photo, live: Photo | None = None, albums: list[str] | None = 
             "export": f"/media/export/{p.id}",
             "video": video,
             "live": motion,
+            # The small copy of a video old enough to be offloaded: what it
+            # plays as while its original is in iCloud, and at once while
+            # its 720p copy is being made.
+            "lowres": lowres_url(p) if small else None,
         },
         "preview_ready": bool(video or motion),
+        # Whether "Get the original" can do anything: the original is in
+        # iCloud only, and iCloud is where it came from.
+        "fetchable": is_offloaded and from_remote(p, settings),
+        "offloaded_at": iso_z(p.offloaded_at) if is_offloaded else None,
+        "lowres_size": small.stat().st_size if small else None,
         "error": p.error,
         "albums": list(albums or []),
         "added_at": iso_z(p.added_at),

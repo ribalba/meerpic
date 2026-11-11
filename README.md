@@ -61,6 +61,13 @@ ffmpeg and gives every video an H.264 copy at 720p, tone-mapped from the iPhone'
 plays everywhere; on a real library the copies came out at 5 to 10% of the originals' size.
 The original is untouched and always one click away.
 
+**Old videos do not have to stay on the disk.** Videos are most of a phone's library (72 of
+113 GB on the one above) and the old ones are rarely watched. With `[offload] after` set,
+a video older than that keeps a 480p copy here (about 1.6% of a 4K original) and its
+original is deleted, but only once iCloud is seen to hold the very same file. It still plays,
+scrubs and searches like any other; **Get the original** in the viewer downloads it again,
+and it stays for a month before it goes again.
+
 **Live Photos are two files.** A Live Photo arrives as a HEIC and a two-second MOV sharing an
 Apple `ContentIdentifier`. Shown naively, every moment appears twice. meerpic pairs them: the
 still is the photo, and the motion plays when you rest on its LIVE badge. On the library
@@ -148,6 +155,39 @@ If you have no remote yet: `rclone config`, a new remote of type `iclouddrive`, 
 ID, and `service = photos`. When Apple asks for a new two-factor code (every few weeks),
 the sync fails with a message saying so; run `rclone config reconnect iclouddrive:` in a
 terminal and press Sync again.
+
+A sync stops when the disk is down to `[sync] keep_free` gigabytes (10 by default) and says
+so. The album refresh and the offload after it run as usual, and the next sync carries on
+where this one stopped.
+
+### iCloud's Shared Library
+
+The photos with the two-person badge on the phone are not in "All Photos". iCloud keeps
+the Shared Library in a zone of its own, which rclone lists beside `PrimarySync`:
+
+```bash
+rclone lsf --dirs-only iclouddrive:
+# PrimarySync/
+# SharedSync-3535C497-14F6-44A1-BF2A-E9A5752153B9/
+```
+
+To have meerpic copy it too, give it a folder of its own in `[library] roots` and name the
+remote in `[sync] remotes`:
+
+```toml
+[library]
+roots = { icloud = "~/Pictures/iCloud", shared = "~/Pictures/iCloud-Shared" }
+
+[sync]
+remotes = { shared = "iclouddrive:SharedSync-3535C497-14F6-44A1-BF2A-E9A5752153B9/All Photos" }
+```
+
+It has to be a folder of its own, because two phones reuse each other's file names
+(`IMG_1234.HEIC`) and one copy into the same folder would overwrite the other's photos.
+meerpic refuses a configuration that puts them in the same place. Every sync then copies
+both, one after the other, and the album refresh reads favourites, Hidden and Recently
+Deleted from both. Deletes, offloading and fetching work the same in either library.
+`is:shared` and the sidebar's Shared Library show what came from it.
 
 ## Using it
 
@@ -244,9 +284,11 @@ Plain words search by meaning. Everything else narrows, and all of it combines:
 | `is:located` `is:unlocated` `is:undated` | what it knows |
 | `is:favorite` `album:"Urlaub Polen"` | iCloud's hearts and albums |
 | `is:whatsapp` `is:saved` | WhatsApp's album; anything an app or a browser saved |
+| `is:shared` | iCloud's Shared Library (see [above](#iclouds-shared-library)) |
 | `is:nsfw` | possibly explicit, most certain first |
 | `is:safe` | the ones you marked safe (`n`) |
 | `is:edited` `is:hidden` `is:deleted` | edits; iCloud's Hidden and Recently Deleted |
+| `is:offloaded` | old videos whose original is in iCloud only (see `[offload]`) |
 | `2024` `year:2024` `month:2024-07` `on:2024-07-22` | when, in the time it was taken where it was taken |
 | `after:2024-03` `before:2024-06-30` | a range; each takes a year, a month or a day |
 | `camera:iphone` | make or model |
@@ -285,6 +327,8 @@ knowing:
 | `[server] password` | off by default, for 127.0.0.1; set it before exposing the port |
 | `[server] timezone` | where a photo without a zone of its own was taken (default: this machine's) |
 | `[video] previews` | `"all"` converts every video in the background, `"on-demand"` when first opened |
+| `[offload] after` | days after which a video from iCloud keeps only a small copy here and its original is deleted (0 = off); `--offload --dry-run` shows what would go |
+| `[offload] height`, `crf` | the small copy's short edge (480) and compression (28) |
 | `[search] model` | SigLIP 2 (default, multilingual) or `Qdrant/clip-ViT-B-32` (six times faster, English) |
 | `[sync] interval` | minutes between automatic syncs; 0 = only when you press the button |
 | `[sync] albums` | read favourites, hidden photos and albums from iCloud after each sync |
@@ -294,6 +338,40 @@ knowing:
 | `[ocr] enabled`, `videos` | read the text in photos, and in videos (ten frames each) |
 | `[share] strip_location` | take the GPS position out of what you drag, copy and download |
 | `[map] tile_url` | the tile server; `""` turns the map off |
+
+### A folder that is not always there
+
+A root can be on a network share or a USB disk. While its folder cannot be listed, its photos
+are out of the grid, the search, the map, the albums and the sidebar counts, and a line in the
+sidebar says how many that hides. The agent neither scans nor indexes it then, and it deletes no
+row. Within about 15 seconds of the folder coming back everything is there again, with nothing
+to index anew.
+
+The containers only see the folders that `docker-compose.yml` mounts, so a share outside
+`~/Pictures` needs a mount of its own. Put it in a `docker-compose.override.yml` beside
+`docker-compose.yml`. `docker compose` merges that file in by itself, but not when files are
+named with `-f`. For a share that systemd mounts on demand, mount its parent folder with slave
+propagation. The containers then see the share come and go just as the host does, and they
+start while it is away.
+
+```yaml
+x-network-share: &network-share
+  type: bind
+  source: /mnt
+  target: /mnt
+  read_only: true
+  bind:
+    propagation: rslave
+
+services:
+  server:
+    volumes: [*network-share]
+  agent:
+    volumes: [*network-share]
+```
+
+Then name the folder in `meerpic.toml`, for example
+`roots = { icloud = "~/Pictures/iCloud", nas = "/mnt/nas/Photos" }`.
 
 ## Architecture
 
@@ -320,12 +398,15 @@ seconds, and writes its progress back into the same row for the UI to poll.
 | `photo_texts` | What a photo or video says, for the files that say anything: its lines, where each is on the photo, and a trigram index for `text:` |
 | `albums`, `photo_albums` | iCloud's albums and which local files are in them, rebuilt after every sync |
 | `deleted_files` | Files deleted here that iCloud still has: the name every sync leaves out, size, SHA-256, where the file went in the trash |
-| `jobs` | Syncs, album refreshes, deletes (with the plan that was confirmed), video conversions, re-indexing: what the agent was asked to do and how far it got |
+| `jobs` | Syncs, album refreshes, deletes (with the plan that was confirmed), video conversions, offloads and fetches of old videos, re-indexing: what the agent was asked to do and how far it got |
 | `settings` | UI preferences and the agent's heartbeat |
 
 Nothing is ever written to a photo, and nothing is deleted except by a Delete somebody
-confirmed. Every column is derived from the file and can be rebuilt
+confirmed, or, once `[offload] after` is set, the original of an old video that iCloud holds
+the very same file of. Every column is derived from the file and can be rebuilt
 (`make reindex STAGE=all`); every file in the cache can be deleted and will be made again.
+The small copies of offloaded videos are not in the cache for that reason: they live in
+`.meerpic-offloaded` in the library folder, beside `.meerpic-trash`.
 A changed file gets a new cache key, so its thumbnail and its URLs change with it and a
 browser can cache everything forever without ever showing a stale one.
 

@@ -195,14 +195,14 @@ def test_the_counts_are_what_each_filter_lists(client, lib):
     counts = client.get("/api/state").json()["counts"]
     assert counts == {
         "all": 9, "photos": 8, "videos": 1, "live": 1, "screenshots": 1, "located": 2,
-        "undated": 0, "favorites": 1, "whatsapp": 3, "saved": 2, "nsfw": 0, "hidden": 2,
-        "deleted": 1,
+        "undated": 0, "favorites": 1, "whatsapp": 3, "saved": 2, "shared": 0, "nsfw": 0,
+        "hidden": 2, "deleted": 1,
     }
     for key, q in {
         "all": "", "photos": "is:photo", "videos": "is:video", "live": "is:live",
         "screenshots": "is:screenshot", "located": "is:located", "undated": "is:undated",
         "favorites": "is:favorite", "whatsapp": "is:whatsapp", "saved": "is:saved",
-        "hidden": "is:hidden", "deleted": "is:deleted",
+        "shared": "is:shared", "hidden": "is:hidden", "deleted": "is:deleted",
     }.items():
         assert photos(client, q=q)["total"] == counts[key], key
 

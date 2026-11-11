@@ -133,8 +133,24 @@ def test_missing_root_deletes_nothing(db, lib):
     lib.rmdir()
     result = scan.scan(db, get_settings())
     assert result.removed == 0 and result.kept == 1
-    assert "missing" in result.warnings[0]
+    assert "not reachable" in result.warnings[0]
     assert set(rows(db)) == {"a.jpg"}
+
+
+def test_a_root_that_comes_back_is_scanned_again(db, lib, tmp_path):
+    write(lib / "a.jpg")
+    write(lib / "sub" / "b.jpg")
+    scan.scan(db, get_settings())
+    away = lib.rename(tmp_path / "unmounted")       # the share is not mounted
+    result = scan.scan(db, get_settings())
+    assert (result.new, result.removed, result.kept) == (0, 0, 2)
+    assert set(rows(db)) == {"a.jpg", "sub/b.jpg"}
+    away.rename(lib)
+    write(lib / "c.jpg")
+    result = scan.scan(db, get_settings())
+    assert (result.new, result.removed, result.kept) == (1, 0, 0)
+    assert not result.warnings
+    assert set(rows(db)) == {"a.jpg", "sub/b.jpg", "c.jpg"}
 
 
 def test_empty_root_deletes_nothing(db, lib):
@@ -165,7 +181,7 @@ def test_unreadable_root_and_folder_delete_nothing_under_them(db, lib):
         assert set(rows(db)) == {"top.jpg", "locked/inside.jpg"}
         lib.chmod(0)
         result = scan.scan(db, get_settings())
-        assert result.removed == 0 and "cannot be read" in result.warnings[0]
+        assert result.removed == 0 and "not reachable" in result.warnings[0]
     finally:
         lib.chmod(0o755)
         (lib / "locked").chmod(0o755)
