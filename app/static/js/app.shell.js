@@ -33,7 +33,14 @@ App.shell = (() => {
   // Titles for filters that are a place of their own but not a sidebar row.
   const TITLES = { "is:hidden": "Hidden", "is:deleted": "Recently Deleted", "is:edited": "Edited" };
 
+  // The sidebar lists the most photographed places. Its chevron opens every
+  // place instead (`allPlaces`, fetched when first opened).
+  const PLACES_TOP = 8;
+  const PLACES_ALL = 5000;
   let places = [];
+  let allPlaces = null;
+  let placesOpen = false;
+  let placesBusy = false;
   let years = [];
   let albums = [];
   // An albums refresh asked for here or seen running: the link spins. `albumJob`
@@ -244,6 +251,45 @@ App.shell = (() => {
       App.el("span", { text: albumsBusy ? "Refreshing" : "Refresh from iCloud" }));
   }
 
+  /* The Places heading's own control: every place, or the top ones again. */
+  function placesLink() {
+    const open = placesOpen && allPlaces !== null;
+    return App.el("button", {
+      class: `tree-link places-toggle${open ? " open" : ""}`, type: "button", disabled: placesBusy,
+      title: open ? "Show only the most photographed places" : "Show every place",
+      "aria-label": open ? "Show fewer places" : "Show every place",
+      "aria-expanded": open ? "true" : "false",
+      onclick: () => togglePlaces(),
+    }, placesBusy ? App.el("span", { class: "spinner tiny" }) : App.el("span", { html: App.icon("chevron", 14) }));
+  }
+
+  async function togglePlaces() {
+    if (placesOpen) { placesOpen = false; allPlaces = null; renderNav(); return; }
+    placesOpen = true;
+    if (allPlaces === null) {
+      placesBusy = true;
+      renderNav();
+      try {
+        allPlaces = labelPlaces((await App.api.get(`/api/places?limit=${PLACES_ALL}`)).places || []);
+      } catch (err) {
+        placesOpen = false;
+        App.toast(`The places could not be loaded: ${err.message}`, { error: true });
+      }
+      placesBusy = false;
+    }
+    renderNav();
+  }
+
+  /* A place's name in the sidebar: its town, or the region or country when
+     it has none, and the whole name when two in the list would read alike. */
+  function labelPlaces(raw) {
+    const names = raw.map((x) => x.city || x.region || x.country || x.place);
+    const seen = new Map();
+    names.forEach((n) => seen.set(n, (seen.get(n) || 0) + 1));
+    return raw.map((x, i) => ({ ...x, label: seen.get(names[i]) > 1 ? x.place : names[i] }))
+      .filter((x) => x.label);
+  }
+
   function albumRows(nodes, counts, grid) {
     // WhatsApp has a row of its own above; the same list twice is noise.
     const whatsapp = Number(counts.whatsapp) > 0;
@@ -287,8 +333,10 @@ App.shell = (() => {
     albumRows(nodes, counts, grid);
 
     if (places.length) {
-      nodes.push(App.el("div", { class: "tree-section", text: "Places" }));
-      places.forEach((p) => {
+      // Fewer than the top's worth: that is every place already.
+      const more = places.length >= PLACES_TOP;
+      nodes.push(App.el("div", { class: "tree-section" }, App.el("span", { text: "Places" }), more ? placesLink() : null));
+      (placesOpen && allPlaces ? allPlaces : places).forEach((p) => {
         const q = placeQuery(p.label);
         nodes.push(navRow({
           label: p.label, icon: "pin", count: p.count, title: `${p.place}\n${q}`,
@@ -319,19 +367,18 @@ App.shell = (() => {
   }
 
   async function loadSidebar() {
-    const [p, t, a] = await Promise.all([
-      App.api.get("/api/places?limit=8").catch(() => null),
+    // Every place only while that list is open. Closed, it is forgotten and
+    // fetched again when next opened, so it is never stale.
+    const open = placesOpen;
+    const [p, t, a, all] = await Promise.all([
+      App.api.get(`/api/places?limit=${PLACES_TOP}`).catch(() => null),
       App.api.get("/api/timeline").catch(() => null),
       App.api.get("/api/albums").catch(() => null),
+      open ? App.api.get(`/api/places?limit=${PLACES_ALL}`).catch(() => null) : null,
     ]);
     if (a) albums = a.albums || [];
-    if (p) {
-      const raw = p.places || [];
-      const names = raw.map((x) => x.city || x.region || x.country || x.place);
-      places = raw.map((x, i) => ({
-        ...x, label: names.filter((n) => n === names[i]).length > 1 ? x.place : names[i],
-      })).filter((x) => x.label);
-    }
+    if (p) places = labelPlaces(p.places || []);
+    if (all) allPlaces = labelPlaces(all.places || []);
     if (t) {
       const byYear = new Map();
       (t.months || []).forEach((m) => {

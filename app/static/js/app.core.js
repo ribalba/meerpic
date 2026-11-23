@@ -627,6 +627,9 @@ App.icons = {
   aperture: '<circle cx="12" cy="12" r="8.5"/><path d="M12 3.5 14.6 12M20.5 12 12 14.6M12 20.5 9.4 12M3.5 12 12 9.4"/>',
   heart: '<path d="M12 19.5 5.2 12.7a4.3 4.3 0 0 1 6.1-6.1l.7.7.7-.7a4.3 4.3 0 0 1 6.1 6.1z"/>',
   heartFill: '<path d="M12 19.5 5.2 12.7a4.3 4.3 0 0 1 6.1-6.1l.7.7.7-.7a4.3 4.3 0 0 1 6.1 6.1z" fill="currentColor"/>',
+  // An open eye: shown.
+  eye: '<path d="M3.5 12s3.2-5.5 8.5-5.5 8.5 5.5 8.5 5.5-3.2 5.5-8.5 5.5S3.5 12 3.5 12z"/>'
+     + '<circle cx="12" cy="12" r="2.4"/>',
   // An eye with a stroke through it: "not shown until you ask".
   eyeOff: '<path d="M3.5 12s3.2-5.5 8.5-5.5 8.5 5.5 8.5 5.5-3.2 5.5-8.5 5.5S3.5 12 3.5 12z"/>'
         + '<circle cx="12" cy="12" r="2.4"/><line x1="4.5" y1="4.5" x2="19.5" y2="19.5"/>',

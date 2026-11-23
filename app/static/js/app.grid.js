@@ -145,8 +145,9 @@ App.grid = (() => {
   }
 
   /* Drawn blurred until hovered: flagged by the classifier, and the reader
-     asked for that (state.nsfw.blur). */
-  const veiled = (card) => Boolean(App.state.nsfw && App.state.nsfw.blur && card.nsfw_flag);
+     asked for that (state.nsfw.blur), unless "Uncover all" is on in is:nsfw. */
+  const blurring = () => Boolean(App.state.nsfw && App.state.nsfw.blur);
+  const veiled = (card) => blurring() && Boolean(card.nsfw_flag) && !App.safe.uncovered();
 
   function paintTile(t, card) {
     App.hover.release(t);
@@ -613,7 +614,32 @@ App.grid = (() => {
         App.el("button", { class: "btn", text: "Back to all", onclick: () => App.shell.setQuery("", { push: true }) }),
       ));
     }
+    // is:nsfw with blurring on: one button takes the blur off every picture
+    // in the list, and puts it back.
+    if (blurring() && App.safe.inNsfw() && total) {
+      const open = App.safe.uncovered();
+      nodes.push(App.el("div", { class: "grid-banner" },
+        App.el("span", { class: "banner-icon", html: App.icon(open ? "eye" : "eyeOff", 22) }),
+        App.el("div", { class: "banner-text" },
+          App.el("span", { class: "banner-title", text: "Possibly explicit" }),
+          App.el("span", { class: "banner-sub", text: open
+            ? "Every picture here is shown without its blur."
+            : "Blurred until you hover over them." }),
+        ),
+        App.el("button", {
+          class: "btn", type: "button", text: open ? "Blur again" : "Uncover all",
+          onclick: () => App.safe.uncover(!open),
+        }),
+      ));
+    }
     head.replaceChildren(...nodes);
+  }
+
+  /* Every tile drawn again with the cards it already has, and the head:
+     the blur went on or off (App.safe.uncover). */
+  function repaint() {
+    tiles.forEach((t, id) => { const c = card(id); if (c) paintTile(t, c); });
+    paintHead();
   }
 
   function emptyState() {
@@ -1095,6 +1121,7 @@ App.grid = (() => {
 
   return {
     init, load, more, above, jump, reveal, newest, setSize, key, onStatus, relayout, checkMore, fitWidth, remove,
+    repaint,
     refresh: () => refreshCards(),
     items: () => items,
     card,

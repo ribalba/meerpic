@@ -169,7 +169,7 @@ class Photo(Base):
     nsfw: Mapped[float | None] = mapped_column(Float)
     # Marked safe by a person: never flagged, whatever ``nsfw`` says, and a
     # flagged photo that looks just like this one is not flagged either (see
-    # app/query.py, ``safe_near``). The one column a person writes, not the
+    # app/query.py, ``near_safe``). The one column a person writes, not the
     # file or iCloud, so no reindex touches it.
     nsfw_safe: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
 

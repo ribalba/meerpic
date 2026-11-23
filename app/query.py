@@ -497,64 +497,94 @@ def shared_clause():
 def safe_ids(db: Session | None = None) -> list[int]:
     """The photos marked safe, a handful (ix_photos_nsfw_safe). Looked up in
     ``db`` when given, which sees that transaction's own marks, else in a
-    short session of its own."""
-    stmt = select(Photo.id).where(Photo.nsfw_safe.is_(True))
+    short session of its own.
+
+    Spelled ``WHERE nsfw_safe`` and not ``IS true``: the index is partial on
+    exactly that, and with the other spelling Postgres cannot use it and
+    reads the whole table (180 ms on 177,000 photos, 2 ms with it)."""
+    stmt = select(Photo.id).where(Photo.nsfw_safe)
     if db is not None:
         return list(db.scalars(stmt))
     with SessionLocal() as own:
         return list(own.scalars(stmt))
 
 
-def safe_near(similarity: float, ids: list[int]):
-    """Whether this photo (correlated on ``photos.id``) looks like one of the
-    marked ``ids``: its search vector at least ``similarity`` close (cosine).
+def _in_memory(vector):
+    """The same vector, as a value of its own rather than a pointer into
+    TOAST. A 768-dimension vector is 3 KB and pgvector stores it out of line,
+    so every comparison that names the column reads it again from there."""
+    return func.subvector(vector, 1, func.vector_dims(vector), type_=PhotoEmbedding.embedding.type)
 
-    The ids are looked up first (safe_ids) and callers skip this when there
-    are none. A subquery that found the marked photos itself was planned the
-    wrong way round: every flagged photo against every vector in the library
-    before asking which were marked, 46 s for /api/state on 19,000 photos.
-    This way both vectors are primary-key lookups."""
-    me, them = aliased(PhotoEmbedding), aliased(PhotoEmbedding)
-    return (
-        select(them.photo_id)
-        .join(me, and_(me.photo_id == Photo.id, me.model == them.model))
-        .where(
-            them.photo_id.in_(ids), them.photo_id != Photo.id, them.model == embed.model_name(),
-            me.embedding.cosine_distance(them.embedding) <= 1 - similarity,
-        )
-        .exists()
+
+def near_safe(db: Session | None, similarity: float, among: list[int] | None = None) -> set[int]:
+    """The flagged photos (above the threshold, not marked) that look like
+    a photo marked safe: their search vectors at least ``similarity`` close
+    (cosine). Only among ``among`` when given. Looked up in ``db`` when given,
+    which sees that transaction's own marks, else in a short session of its
+    own. Nothing is near anything when ``similarity`` is 0 (switched off).
+
+    One query for the whole set, which callers then use as a list of ids.
+    A correlated subquery per photo (the earlier ``safe_near``) read every
+    marked vector again for every photo, and both vectors from TOAST for
+    every pair: 20 s for /api/state on 177,000 photos with 31 marks. Here
+    both sides are read once into memory (the two MATERIALIZED CTEs), and
+    3,400 flagged photos against 31 marks take 0.3 s."""
+    if db is None:
+        with SessionLocal() as own:
+            return near_safe(own, similarity, among)
+    if similarity <= 0 or (among is not None and not among):
+        return set()
+    marked = safe_ids(db)
+    if not marked:
+        return set()
+    s = get_settings()
+    model = embed.model_name()
+    them = (
+        select(PhotoEmbedding.photo_id.label("id"), _in_memory(PhotoEmbedding.embedding).label("v"))
+        .where(PhotoEmbedding.photo_id.in_(marked), PhotoEmbedding.model == model)
+        .cte("marked_vectors")
+        .prefix_with("MATERIALIZED")
     )
+    flagged = [Photo.nsfw >= s.nsfw_threshold, Photo.nsfw_safe.is_(False)]
+    if among is not None:
+        flagged.append(Photo.id.in_(among))
+    me = (
+        select(Photo.id.label("id"), _in_memory(PhotoEmbedding.embedding).label("v"))
+        .join(PhotoEmbedding, and_(PhotoEmbedding.photo_id == Photo.id, PhotoEmbedding.model == model))
+        .where(*flagged)
+        .cte("flagged_vectors")
+        .prefix_with("MATERIALIZED")
+    )
+    return set(db.scalars(
+        select(me.c.id).distinct()
+        .join(them, them.c.id != me.c.id)
+        .where(me.c.v.cosine_distance(them.c.v) <= 1 - similarity)
+    ))
 
 
-def nsfw_clause(ids: list[int] | None = None):
+def nsfw_clause():
     """Flagged: above the threshold, and neither marked safe nor looking just
-    like a photo that was (``ids``, the marked ones; looked up when None).
+    like a photo that was (near_safe, looked up here as a list of ids).
     Read at query time, not import time, so changed settings (and a test that
     changes them) take effect without a restart."""
     s = get_settings()
     clause = and_(Photo.nsfw >= s.nsfw_threshold, Photo.nsfw_safe.is_(False))
-    if s.nsfw_clear_above > 0:
-        ids = safe_ids() if ids is None else ids
-        if ids:
-            clause = and_(clause, ~safe_near(s.nsfw_clear_above, ids))
+    cleared = near_safe(None, s.nsfw_clear_above)
+    if cleared:
+        clause = and_(clause, Photo.id.not_in(sorted(cleared)))
     return clause
 
 
 def safe_cleared(db: Session, photos: list) -> set[int]:
     """Which of these photos the classifier flags, and look just like a photo
     marked safe, so are not flagged after all. One query per page, none when
-    nothing on it is flagged or nothing is marked."""
+    nothing on it is flagged."""
     s = get_settings()
     flagged = [p.id for p in photos
                if p.nsfw is not None and p.nsfw >= s.nsfw_threshold and not p.nsfw_safe]
-    if not flagged or s.nsfw_clear_above <= 0:
+    if not flagged:
         return set()
-    marked = safe_ids(db)
-    if not marked:
-        return set()
-    return set(db.scalars(
-        select(Photo.id).where(Photo.id.in_(flagged), safe_near(s.nsfw_clear_above, marked))
-    ))
+    return near_safe(db, s.nsfw_clear_above, among=flagged)
 
 
 def safe_lookalike(db: Session, photo: Photo) -> tuple[Photo, float] | None:
@@ -602,7 +632,8 @@ _FLAG_CLAUSES = {
     "saved": saved_clause,
     "nsfw": nsfw_clause,
     # Marked safe by hand (the marks, not the lookalikes they clear).
-    "safe": lambda: Photo.nsfw_safe.is_(True),
+    # Bare, for the partial index (see safe_ids).
+    "safe": lambda: Photo.nsfw_safe,
     "edited": edited_clause,
     # Videos whose original is in iCloud only (core/offloading.py).
     "offloaded": lambda: Photo.offloaded_at.is_not(None),
@@ -854,8 +885,7 @@ def nsfw_matches(clauses: list):
     scores its probability minus one, which lists it after every other.
     """
     score = Photo.nsfw
-    demote = get_settings().nsfw_demote_above
-    marked = safe_ids() if demote > 0 else []
-    if marked:
-        score = case((safe_near(demote, marked), Photo.nsfw - 1), else_=Photo.nsfw)
+    demoted = near_safe(None, get_settings().nsfw_demote_above)
+    if demoted:
+        score = case((Photo.id.in_(sorted(demoted)), Photo.nsfw - 1), else_=Photo.nsfw)
     return select(Photo.id.label("id"), score.label("score")).where(*clauses).subquery("matches")

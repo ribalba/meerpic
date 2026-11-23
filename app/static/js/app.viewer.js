@@ -287,7 +287,8 @@ App.viewer = (() => {
   // --- a flagged picture, blurred until asked for ------------------------------------
 
   function isVeiled(c) {
-    return Boolean(c && App.state.nsfw && App.state.nsfw.blur && c.nsfw_flag && !revealed.has(c.id));
+    return Boolean(c && App.state.nsfw && App.state.nsfw.blur && c.nsfw_flag && !revealed.has(c.id))
+      && !App.safe.uncovered();
   }
 
   function paintVeil(c) {

@@ -35,7 +35,9 @@ router = APIRouter(prefix="/api", tags=["places"], dependencies=[Depends(require
 DB = Annotated[Session, Depends(get_db)]
 
 PLACES_DEFAULT = 20
-PLACES_MAX = 200
+# High enough for the sidebar's "every place" list (728 in a library of
+# 177,000 photos).
+PLACES_MAX = 5000
 MAX_ZOOM = 24
 
 

@@ -3,7 +3,7 @@
 ``POST /api/photos/safe`` with ``{"ids": [...], "safe": true}`` marks photos
 safe (``false`` takes the mark back). A marked photo is never flagged, and a
 flagged photo that looks just like a marked one is not flagged either, so one
-mark clears a series of near-identical shots (app/query.py, ``safe_near``).
+mark clears a series of near-identical shots (app/query.py, ``near_safe``).
 Nothing is retrained and nothing is stored but the mark: whether a photo is
 cleared is worked out whenever it is asked, so taking a mark back flags its
 lookalikes again at once.
@@ -15,14 +15,14 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends
 from pydantic import BaseModel, Field
-from sqlalchemy import select, update
+from sqlalchemy import update
 from sqlalchemy.orm import Session
 
 from core.config import get_settings
 from core.database import get_db
 from core.models import Photo
 
-from ..query import safe_ids, safe_near
+from ..query import near_safe
 from ..security import require_auth
 
 router = APIRouter(prefix="/api", tags=["nsfw"], dependencies=[Depends(require_auth)])
@@ -37,15 +37,8 @@ class SafeBody(BaseModel):
 
 
 def _cleared(db: Session) -> set[int]:
-    """The photos the classifier flags that look just like a marked one. A
-    few hundred flagged photos at most, compared with the marked handful."""
-    s = get_settings()
-    marked = safe_ids(db) if s.nsfw_clear_above > 0 else []
-    if not marked:
-        return set()
-    return set(db.scalars(select(Photo.id).where(
-        Photo.nsfw >= s.nsfw_threshold, Photo.nsfw_safe.is_(False), safe_near(s.nsfw_clear_above, marked),
-    )))
+    """The photos the classifier flags that look just like a marked one."""
+    return near_safe(db, get_settings().nsfw_clear_above)
 
 
 @router.post("/photos/safe")

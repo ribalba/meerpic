@@ -129,6 +129,12 @@ button { font-family: inherit; color: inherit; }
 .tree-link:hover { text-decoration: underline; }
 .tree-link:disabled { color: var(--text-muted); cursor: default; text-decoration: none; }
 .spinner.tiny { width: 11px; height: 11px; border-width: 1.5px; }
+/* The Places heading's chevron: down for "every place", up for "fewer". */
+.places-toggle { width: 20px; height: 18px; justify-content: center; border-radius: 4px;
+  color: var(--text-muted); }
+.places-toggle:hover { background: var(--hover-tint); color: var(--text); }
+.places-toggle svg { transition: transform .15s; }
+.places-toggle.open svg { transform: rotate(180deg); }
 
 /* --- The status card: sync and indexing, at the foot of the sidebar --- */
 .status-card { margin: .2rem .6rem .5rem; padding: .5rem .6rem; border-radius: 8px;
@@ -396,6 +402,9 @@ button { font-family: inherit; color: inherit; }
   flex: 0 0 auto; background: var(--placeholder); }
 /* A face search's banner: the face, round, as the info panel draws it. */
 .grid-banner img.face { border-radius: 50%; }
+/* The is:nsfw banner's eye, in place of a picture. */
+.banner-icon { width: 52px; height: 52px; flex: 0 0 auto; display: grid; place-items: center;
+  border-radius: 6px; background: var(--placeholder); color: var(--text-muted); }
 .banner-text { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: .1rem; }
 .banner-title { font-weight: 620; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .banner-sub { font-size: .76rem; color: var(--text-muted); }

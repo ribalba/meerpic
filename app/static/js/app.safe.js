@@ -1,7 +1,7 @@
 /* Marking pictures safe: the NSFW classifier's flag, overruled by the reader.
 
    A photo marked safe is never flagged again, and a flagged photo that looks
-   just like it (by the search vectors, see app/query.py safe_near) is not
+   just like it (by the search vectors, see app/query.py near_safe) is not
    flagged either, so one mark clears a series of near-identical shots. The
    server answers with which other photos that cleared, or flagged again
    when a mark is taken back, so the page updates exactly those: in is:nsfw
@@ -12,6 +12,22 @@ window.App = window.App || {};
 
 App.safe = (() => {
   const inNsfw = () => /(^|\s)is:nsfw(\s|$)/.test(App.state.q || "");
+
+  /* "Uncover all" in is:nsfw: every flagged picture there drawn without its
+     blur, in the grid and in the viewer. It lasts only while the query asks
+     for is:nsfw. Whatever else is shown next starts blurred again, and so
+     does is:nsfw the next time it is opened. */
+  let open = false;
+
+  function uncovered() {
+    if (open && !inNsfw()) open = false;
+    return open;
+  }
+
+  function uncover(on) {
+    open = Boolean(on) && inNsfw();
+    App.grid.repaint();
+  }
 
   function said(n, safe, answer) {
     const what = n === 1 ? "photo" : App.fmt.plural(n, "photo");
@@ -64,5 +80,5 @@ App.safe = (() => {
     mark(cards, !cards.every((c) => c.nsfw_safe));
   }
 
-  return { mark, fromKeys, inNsfw };
+  return { mark, fromKeys, inNsfw, uncovered, uncover };
 })();
