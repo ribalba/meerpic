@@ -97,7 +97,8 @@ def test_photos_end_to_end(db, lib, pipe):
     assert b.lat is None and b.place == ""
 
     assert pending(db, get_settings()) == {"meta": 0, "thumbs": 0, "embeddings": 0, "previews": 0,
-                                           "story": 0, "nsfw": 0, "faces": 0, "ocr": 0, "failed": 0}
+                                           "story": 0, "nsfw": 0, "faces": 0, "ocr": 0, "lowres": 0,
+                                           "failed": 0}
     # Newest first in the grid's order: sort_at follows the real dates now.
     order = [p.name for p in db.scalars(select(Photo).order_by(Photo.sort_at.desc(), Photo.id.desc()))]
     assert order == ["c3e65ce8-457b-4a37-934d-162bc851fece.jpg", "IMG_1.jpg",
