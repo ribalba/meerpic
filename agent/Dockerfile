@@ -7,7 +7,7 @@
 # ffmpeg-free can neither decode HEVC nor encode H.264 with libx264; Debian's
 # ffmpeg can do both, and has zscale for turning the iPhone's HDR into colours
 # that look right on an ordinary screen.
-FROM python:3.14-slim
+FROM python:3.15-slim
 
 ARG MEERPIC_VERSION=0.0.0
 # iCloud Photos arrived in rclone's iclouddrive backend in 1.74; Debian's

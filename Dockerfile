@@ -1,7 +1,7 @@
 # meerpic-server. The agent is not in here: this image shows your photos and
 # never changes one, and it has no ffmpeg, no exiftool and no rclone because
 # nothing it does needs them.
-FROM python:3.14-slim
+FROM python:3.15-slim
 
 ARG MEERPIC_VERSION=0.0.0
 
