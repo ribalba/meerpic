@@ -9,7 +9,7 @@ starlette==1.7.0            # pinned directly, not left to FastAPI's range (see 
 uvicorn[standard]==0.54.0
 sqlalchemy==2.1.1
 pydantic==2.13.5
-pydantic-settings==2.15.0
+pydantic-settings==2.16.0
 psycopg[binary]==3.3.6
 pgvector==0.5.0             # the vector column type, both halves
 tzdata==2026.4              # IANA zones on hosts that ship none (containers)
